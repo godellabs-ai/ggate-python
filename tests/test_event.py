@@ -1,0 +1,100 @@
+import unittest
+
+from ggate.core.config import Config
+from ggate.core.event import RuntimeEventBuilder
+
+
+class EventTests(unittest.TestCase):
+    def test_redacts_secret_and_hashes_original(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        event, redaction = builder.prompt("token=abc1234567890", framework="generic")
+
+        self.assertIn("[REDACTED]", event["payload"]["text"])
+        self.assertEqual(redaction.redaction_count, 1)
+        self.assertIsNotNone(redaction.content_sha256)
+
+    def test_derivable_fields_stay_off_the_wire(self):
+        """Sizes and the schema constant are the receiver's to fill (`fill_derived`)."""
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        prompt, _ = builder.prompt("hello")
+        result, _ = builder.tool_result("bash", "stdout", kind="shell")
+
+        self.assertNotIn("schema_version", prompt)
+        self.assertNotIn("length", prompt["payload"])
+        self.assertNotIn("output_len", result["payload"])
+        # The event id and timestamp are NOT derivable: the id is the retry idempotency key and the
+        # timestamp is when the application saw the content, not when the Console received it.
+        self.assertIn("id", prompt)
+        self.assertIn("timestamp", prompt)
+
+    def test_session_carries_only_established_correlation(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        anonymous, _ = builder.prompt("hello")
+        correlated, _ = builder.prompt("hello", correlation_id="turn-7")
+
+        self.assertNotIn("correlation_id", anonymous["session"])
+        self.assertNotIn("cwd", anonymous["session"])
+        self.assertEqual(correlated["session"]["correlation_id"], "turn-7")
+
+    def test_default_session_and_platform_are_runtime_friendly(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        event, _ = builder.prompt("hello", framework="langchain")
+
+        self.assertTrue(event["session"]["session_id"].startswith("py-sdk-"))
+        self.assertEqual(event["collector"]["labels"]["framework"], "langchain")
+        # platform_os is a Console dimension: must match the Rust std::env::consts vocabulary.
+        self.assertIn(event["collector"]["platform"]["os"], {"linux", "macos", "windows"})
+
+    def test_correlation_ids_ride_in_source_not_session(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        event, _ = builder.response(
+            "hi",
+            framework="openai",
+            model="gpt-4o",
+            conversation_id="conv-1",
+            request_id="req-1",
+        )
+
+        # The Rust Session struct has no model/conversation/request fields; they
+        # belong to SourceContext and would be silently dropped from session.
+        for key in ("model", "conversation_id", "request_id"):
+            self.assertNotIn(key, event["session"])
+        self.assertEqual(event["source"]["model"], "gpt-4o")
+        self.assertEqual(event["source"]["conversation_id"], "conv-1")
+        self.assertEqual(event["source"]["request_id"], "req-1")
+
+    def test_response_carries_token_usage_telemetry(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        event, _ = builder.response(
+            "hi",
+            usage={"input_tokens": 10, "output_tokens": 5, "unknown_key": 1},
+            duration_ms=1200,
+            api_calls=2,
+        )
+
+        payload = event["payload"]
+        self.assertEqual(payload["usage"], {"input_tokens": 10, "output_tokens": 5})
+        self.assertEqual(payload["duration_ms"], 1200)
+        self.assertEqual(payload["api_calls"], 2)
+
+    def test_tool_call_defaults_server_to_framework_and_redacts_input(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        event, redaction = builder.tool_call(
+            "web_search",
+            input_summary={"query": "hello", "auth": "token=abc1234567890"},
+            framework="crewai",
+        )
+
+        payload = event["payload"]
+        self.assertEqual(payload["server"], "crewai")
+        self.assertEqual(payload["input_summary"]["auth"], "[REDACTED]")
+        self.assertEqual(redaction.redaction_count, 1)
+
+    def test_file_event_rejects_unknown_action(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        with self.assertRaises(ValueError):
+            builder.file_event("/tmp/x", action="chmod")
+
+
+if __name__ == "__main__":
+    unittest.main()

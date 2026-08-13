@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ggate"
+version = "0.2.0"
+description = "Godel's Gate SDK for monitoring Python AI agent frameworks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Godel Labs" }]
+keywords = ["ai", "agents", "security", "llm", "monitoring"]
+dependencies = []
+
+[project.optional-dependencies]
+openai = ["openai>=1"]
+langchain = ["langchain-core>=0.2"]
+crewai = ["crewai>=0.100"]
+autogen = ["autogen-agentchat>=0.4"]
+llamaindex = ["llama-index-core>=0.10"]
+haystack = ["haystack-ai>=2"]
+semantic-kernel = ["semantic-kernel>=1"]
+dspy = ["dspy>=2"]
+phidata = ["phidata>=2"]
+agno = ["agno>=1"]
+all = [
+  "openai>=1",
+  "langchain-core>=0.2",
+  "crewai>=0.100",
+  "autogen-agentchat>=0.4",
+  "llama-index-core>=0.10",
+  "haystack-ai>=2",
+  "semantic-kernel>=1",
+  "dspy>=2",
+  "phidata>=2",
+  "agno>=1",
+]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ggate"]
