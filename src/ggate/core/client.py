@@ -1,11 +1,13 @@
 """High-level SDK client.
 
-Latency/failure contract: the SDK never breaks the host application. In ``sync``
-mode a scan blocks only up to the configured budget for a verdict and fails open on
-any transport problem; after a failure a cooldown breaker fails open instantly
-instead of re-dialing a struggling agent on every call. In ``async`` mode (and for
-post-hoc surfaces like responses and tool results) events are queued to a background
-worker and the call returns immediately.
+Every scan goes to the Console's ``POST /api/v1/scan``. That is the only destination the SDK
+has: it holds the Console URL and an API key, and talks to nothing else.
+
+Latency/failure contract: the SDK never breaks the host application. In ``sync`` mode a scan
+blocks only up to the configured budget for a verdict and fails open on any transport problem;
+after a failure a cooldown breaker fails open instantly instead of re-calling a struggling
+Console on every request. In ``async`` mode (and for post-hoc surfaces like responses and tool
+results) events are queued to a background worker and the call returns immediately.
 """
 
 from __future__ import annotations
@@ -16,20 +18,26 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from ..exceptions import GgateBlockedError
+from ..exceptions import GgateBlockedError, GgateTransportError
 from .config import Config
+from .console_transport import ConsoleTransport
 from .decision import Decision
 from .event import SDK_VERSION, Attachment, RuntimeEventBuilder, attachment_from_path, event_context
 from .queue import DeliveryQueue
-from .transport import Transport
 
 logger = logging.getLogger("ggate")
 
 _client: Optional["Client"] = None
 
+_UNCONFIGURED = (
+    "GGATE_CONSOLE_URL and GGATE_API_KEY are not set, so there is nowhere to scan: "
+    "every scan will fail open. Set both (Console UI -> Admin -> API keys), or pass "
+    "console_url=/api_key= to init()."
+)
+
 
 class _Breaker:
-    """Fail open instantly for `cooldown` seconds after a sync-scan transport failure."""
+    """Fail open instantly for `cooldown` seconds after a sync-scan failure."""
 
     def __init__(self, cooldown: float):
         self._cooldown = cooldown
@@ -45,16 +53,31 @@ class _Breaker:
         self._until = 0.0
 
 
+class _UnconfiguredTransport:
+    """Stands in when no Console was configured.
+
+    Raising here rather than at construction keeps the promise that the SDK never breaks the
+    host application: a misconfigured deployment degrades to fail-open allows with a message
+    naming the missing setting, exactly as an unreachable Console would.
+    """
+
+    def request(self, request):
+        raise GgateTransportError(_UNCONFIGURED)
+
+    async def request_async(self, request):
+        raise GgateTransportError(_UNCONFIGURED)
+
+
 class Client:
     def __init__(self, config: Optional[Config] = None, transport=None):
         self.config = config or Config.from_values()
         if transport is None:
-            if self.config.console_url and self.config.api_key:
-                from .console_transport import ConsoleTransport
-
+            if self.config.configured:
                 transport = ConsoleTransport(self.config)
             else:
-                transport = Transport(self.config)
+                if self.config.enabled:
+                    logger.warning("ggate: %s", _UNCONFIGURED)
+                transport = _UnconfiguredTransport()
         self.transport = transport
         self.builder = RuntimeEventBuilder(self.config)
         self.queue = DeliveryQueue(self.transport, self.config.queue_max, self.config.flush_timeout)
@@ -181,12 +204,12 @@ class Client:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return Decision.fail_open_decision("agent unavailable (cooling down after failure)")
+            return Decision.fail_open_decision("console unavailable (cooling down after failure)")
         try:
-            decision = Decision.from_agent_response(self.transport.request(request))
+            decision = Decision.from_response(self.transport.request(request))
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open
             self._breaker.trip()
-            logger.warning("ggate agent scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
+            logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
             return Decision.fail_open_decision(str(exc))
         self._breaker.reset()
         return decision
@@ -199,12 +222,12 @@ class Client:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return Decision.fail_open_decision("agent unavailable (cooling down after failure)")
+            return Decision.fail_open_decision("console unavailable (cooling down after failure)")
         try:
-            decision = Decision.from_agent_response(await self.transport.request_async(request))
+            decision = Decision.from_response(await self.transport.request_async(request))
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open
             self._breaker.trip()
-            logger.warning("ggate agent scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
+            logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
             return Decision.fail_open_decision(str(exc))
         self._breaker.reset()
         return decision

@@ -6,7 +6,9 @@ from ggate.core.event import RuntimeEventBuilder
 
 class EventTests(unittest.TestCase):
     def test_redacts_secret_and_hashes_original(self):
-        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        # Redaction is opt-in: the Console is the detection engine, so the default sends raw
+        # content. This exercises the deployments that turn masking on anyway.
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync", redact=True))
         event, redaction = builder.prompt("token=abc1234567890", framework="generic")
 
         self.assertIn("[REDACTED]", event["payload"]["text"])
@@ -78,7 +80,7 @@ class EventTests(unittest.TestCase):
         self.assertEqual(payload["api_calls"], 2)
 
     def test_tool_call_defaults_server_to_framework_and_redacts_input(self):
-        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync", redact=True))
         event, redaction = builder.tool_call(
             "web_search",
             input_summary={"query": "hello", "auth": "token=abc1234567890"},

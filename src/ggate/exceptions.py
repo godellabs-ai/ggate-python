@@ -8,11 +8,11 @@ class GgateError(Exception):
 
 
 class GgateTransportError(GgateError):
-    """Raised internally when the local agent cannot be reached."""
+    """Raised internally when the Console cannot be reached or rejects the request."""
 
 
 class GgateBlockedError(GgateError):
-    """Raised by enforcing adapters when the agent returns a block or hard_block verdict."""
+    """Raised by enforcing adapters on a block or hard_block verdict."""
 
     def __init__(self, decision):
         self.decision = decision

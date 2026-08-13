@@ -1,9 +1,9 @@
-"""Console transport: scan via the Console's HTTP API instead of a local agent.
+"""The SDK's transport: scan via the Console's HTTP API.
 
-For deployments where the application embeds the SDK and no per-device
-ggate-agent runs, scans go straight to the Console's ``POST /api/v1/scan``
-endpoint. The Console evaluates detectors + policy, records the event, and
-returns the decision.
+Scans go to the Console's ``POST /api/v1/scan`` endpoint, which runs the full
+pipeline — normalize, OCR/extraction of attachments, deterministic rules, the
+security classifier, DLP, threat intel, document intelligence, and policy —
+records the event, and returns the decision.
 
 Auth is the same scale path the agents use: the IAM API key is exchanged ONCE at
 ``/api/v1/agent/token`` for a short-lived JWT, and scans carry ``Authorization:

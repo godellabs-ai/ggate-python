@@ -1,24 +1,152 @@
-# ggate Python SDK
+# Godel's Gate Python SDK
 
-Python package for monitoring AI agent framework prompts, responses, files, and tool activity.
-Scans reach a detection engine two ways, chosen from the configuration: the local `ggate-agent`
-over mTLS (default), or the Console API for applications with no per-device agent.
+`ggate` turns an AI agent application into a Godel's Gate collector: a few lines of code capture
+framework activity (prompts, responses, tool calls, tool results, file access) as `gate/v1`
+runtime events, send them for detection + policy evaluation, and — in sync mode — enforce the
+returned verdict.
+
+SDK events carry `identity.agent_source = "agent-framework"` and
+`collector.collector_type = "sdk"`; the specific AI framework (langchain, openai, crewai, …)
+travels in `collector.labels.framework` and `source.client`, which the Console renders as
+`agent-framework:<framework>` connectors.
+
+The Node.js SDK is [godellabs-ai/ggate-node](https://github.com/godellabs-ai/ggate-node).
+
+## Install
+
+```bash
+python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git"
+```
+
+The core package has no dependencies. Framework adapters import the framework you already use;
+extras are available if you want pip to pull one in (`ggate[openai]`, `ggate[langchain]`,
+`ggate[all]`, …). Python 3.9+.
+
+## Quickstart
 
 ```python
 import ggate
 
-decision = ggate.scan_prompt("Summarize this document", framework="langchain")
+ggate.init(mode="sync")  # default
+
+decision = ggate.scan_prompt("Summarize this document", framework="langchain", model="gpt-4o")
 if decision.blocked:
     raise RuntimeError(decision.message)
+
+ggate.scan_response(
+    "Summary text",
+    framework="langchain",
+    model="gpt-4o",
+    usage={"input_tokens": 1200, "output_tokens": 240},  # optional turn telemetry
+)
 ```
 
-Console mode needs the Console URL and an IAM API key (Console UI → Admin → API keys); the
-Console runs the full pipeline for each scan, records the event, and returns the verdict:
+Framework instrumentation — see [docs/framework-coverage.md](docs/framework-coverage.md) for the
+full matrix of what each adapter hooks and where it can enforce:
+
+```python
+import ggate
+from openai import OpenAI
+
+client = ggate.instrument("openai", client=OpenAI())          # wrapped client
+
+handler = ggate.instrument("langchain")                       # callback handler
+```
+
+## Connecting to a Console
+
+The Console is the SDK's only destination. Set its URL and an IAM API key (Console UI →
+**Admin → API keys**) and scans go to `POST /api/v1/scan`, which runs the full pipeline —
+normalize, OCR/extraction of image and file attachments, deterministic rules, the security
+classifier, DLP, threat intel, document intelligence, and policy — records the event, and
+returns the verdict:
 
 ```bash
 GGATE_CONSOLE_URL=https://godels-gate.example.com
 GGATE_API_KEY=godel_...
 ```
 
-See the repository README one directory up for the transports, verdict semantics, latency and
-fail-open contract, configuration, and complete examples.
+The API key is exchanged once at `/api/v1/agent/token` for a short-lived JWT, so per-scan auth is
+a stateless signature check rather than a password hash.
+
+Both are required. With either missing the SDK logs one warning at startup and every scan fails
+open with a message naming what is unset — a configuration mistake must not break the
+application, and it must not silently look like an all-clear either.
+
+The SDK sends **unredacted** content by default. The Console is the detection engine, so
+client-side masking would hide exactly the secrets it exists to catch; set `GGATE_REDACT=1` for
+deployments that would rather lose those detections than let the content leave the process.
+
+## Verdicts
+
+A scan returns a `Decision`: `verdict` (`pass` | `warn` | `block` | `hard_block` | `system`),
+`message`, `reason_codes`, and — on warn/block — a `detection` headline naming which protection
+fired (`{"source": "sensitive_data", "detail": "aws_access_key_id", ...}`). `decision.blocked` /
+`decision.allowed` are the convenience accessors; passing `enforce=True` raises
+`GgateBlockedError` on a block instead.
+
+Async applications have `await`-able twins of every scan call (`scan_prompt_async`,
+`scan_response_async`, `scan_tool_call_async`, `scan_tool_result_async`).
+
+## Latency and failure semantics
+
+The SDK never breaks the host application:
+
+- **Sync mode** blocks a prompt/tool-call scan until the verdict, bounded by the scan budget
+  (`GGATE_TIMEOUT_MS`, else 4s — a ceiling, not a per-call cost; raise it for prompts carrying
+  attachments, where the Console also extracts and OCRs the file). Responses, tool results, and
+  file events are queued in the background regardless of mode.
+- **Async mode** (`ggate.init(mode="async")`) queues everything and always returns an immediate
+  pass — observability without gating.
+- **Fail open**: any problem reaching the Console (unreachable, restarting, slow, rejected key,
+  unconfigured) yields an allow decision with `fail_open=True`. After a failure the SDK fails
+  open instantly for a cooldown (`GGATE_COOLDOWN_SECS`, default 30) instead of re-calling a
+  struggling Console on every request.
+- **Background queue**: bounded (`GGATE_QUEUE_MAX`, drop-oldest), retries transient failures
+  with capped backoff, and its shutdown flush is deadline-bounded (`GGATE_FLUSH_TIMEOUT_MS`,
+  default 3000) so application exit never hangs. Call `ggate.flush()` to drain explicitly.
+- **Redaction**: with `GGATE_REDACT` on, known secret patterns are masked before anything leaves
+  the process; the original content hash + mask count travel in the scan's redaction summary.
+
+## Configuration
+
+`GGATE_CONSOLE_URL` and `GGATE_API_KEY` are required; everything else has a default. Identity
+falls back to the device config at `~/.ggate/config.yaml` when an agent installed on the same
+machine wrote one — read for identity only, so SDK events land under the same org/seat/device as
+that machine's other collectors. Environment variables:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `GGATE_MODE` | `sync` (enforce) or `async` (observe) | `sync` |
+| `GGATE_CONSOLE_URL` | Console base URL, e.g. `https://godels-gate.example.com` — **required** | unset |
+| `GGATE_API_KEY` | Console IAM API key (`godel_...`) — **required** | unset |
+| `GGATE_TIMEOUT_MS` | sync scan budget | 4000 |
+| `GGATE_DISABLED` | `1` disables the SDK entirely | off |
+| `GGATE_HOME` | where the device config is looked for | `~/.ggate` |
+| `GGATE_CONFIG` | device config.yaml path (identity defaults only) | `$GGATE_HOME/config.yaml` |
+| `GGATE_ORG_ID` | organization id | config `org_id`, else `local` |
+| `GGATE_USER` / `GGATE_USER_EMAIL` | seat identity | config `user_email`, else `<os-user>@<host>` |
+| `GGATE_WORKSTATION_ID` | stable device id | config `workstation_id` |
+| `GGATE_COLLECTOR_ID` | collector id | `<workstation_id>:ggate-python-sdk` |
+| `GGATE_QUEUE_MAX` | background queue bound | 1024 |
+| `GGATE_COOLDOWN_SECS` | fail-open cooldown after a failure | 30 |
+| `GGATE_FLUSH_TIMEOUT_MS` | default/atexit flush deadline | 3000 |
+| `GGATE_REDACT` | mask secrets before sending | off |
+| `GGATE_CAPTURE_FILE_TEXT` | capture attachment content (else metadata only) | off |
+| `GGATE_MAX_FILE_BYTES` | attachment capture cap | 65536 |
+
+The same values can be passed programmatically to `ggate.init(...)`.
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests
+```
+
+See [docs/testing-guide.md](docs/testing-guide.md) for the layered test approach — unit tests, a
+live-Console smoke test, policy enforcement, and per-framework checks.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).

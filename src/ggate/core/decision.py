@@ -1,8 +1,8 @@
-"""Decision model returned by the local agent.
+"""Decision model returned by the Console.
 
-Mirrors the Rust ``Decision`` (``shared/ggate-core/src/decision.rs``): a verdict, a
-human-readable message, and — for warn/block — a ``detection`` headline naming which
-protection fired (``{"source": ..., "detail": ..., "other_sources": N}``).
+Mirrors the Rust ``Decision``: a verdict, a human-readable message, and — for warn/block — a
+``detection`` headline naming which protection fired
+(``{"source": ..., "detail": ..., "other_sources": N}``).
 """
 
 from __future__ import annotations
@@ -51,13 +51,15 @@ class Decision:
         )
 
     @classmethod
-    def from_agent_response(cls, value: Dict[str, Any]) -> "Decision":
-        """Parse a `{"kind": "verdict", ...}` agent response; anything else fails open."""
+    def from_response(cls, value: Dict[str, Any]) -> "Decision":
+        """Parse a scan response body. The Console answers with the decision itself; an
+        explicit `{"kind": "error", ...}` — or any shape this SDK does not recognize — fails
+        open rather than being reported as a verdict nobody reached."""
         kind = value.get("kind")
         if kind == "error":
-            return cls.fail_open_decision(value.get("message") or "agent returned error")
+            return cls.fail_open_decision(value.get("message") or "console returned an error")
         if kind not in (None, "verdict"):
-            return cls.fail_open_decision(f"unexpected agent response kind {kind!r}")
+            return cls.fail_open_decision(f"unexpected scan response kind {kind!r}")
         return cls(
             verdict=str(value.get("verdict", "pass")),
             message=str(value.get("message", "allowed")),

@@ -1,9 +1,9 @@
 """Background fire-and-forget delivery.
 
 One daemon worker drains a bounded deque. Delivery failures are retried a few times
-with capped exponential backoff (the agent may be restarting); when the queue is
+with capped exponential backoff (the Console may be restarting); when the queue is
 full the oldest event is dropped, and `flush` is deadline-bounded so application
-shutdown never hangs on a dead agent.
+shutdown never hangs on an unreachable Console.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
-from .transport import Transport
 
 logger = logging.getLogger("ggate")
 
@@ -25,7 +24,7 @@ _BACKOFF_CAP = 30.0
 
 
 class DeliveryQueue:
-    def __init__(self, transport: Transport, maxsize: int, flush_timeout: float):
+    def __init__(self, transport, maxsize: int, flush_timeout: float):
         self._transport = transport
         self._maxsize = max(1, maxsize)
         self._flush_timeout = flush_timeout

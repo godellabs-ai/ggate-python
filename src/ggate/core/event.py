@@ -8,7 +8,7 @@ to render `agent-framework:<framework>` connectors.
 
 The event states only what the SDK actually knows. Anything the receiver can work out
 for itself is left off the wire: ``schema_version`` (a constant), and the payload sizes
-``length`` / ``output_len``, which the agent and Console derive from the text in the same
+``length`` / ``output_len``, which the Console derives from the text in the same
 payload (``RuntimeEvent::fill_derived``). Sending them again would be a second source of
 truth for the same fact, and a chance for the two to disagree.
 

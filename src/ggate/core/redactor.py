@@ -1,4 +1,8 @@
-"""Best-effort collector-side redaction before sending to the local agent."""
+"""Best-effort collector-side redaction before content leaves the process.
+
+Off by default: the Console is the detection engine, so masking here would hide exactly the
+secrets it exists to catch. Deployments that would rather lose those detections than send the
+content set ``GGATE_REDACT=1``."""
 
 from __future__ import annotations
 
