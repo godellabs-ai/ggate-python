@@ -94,7 +94,12 @@ class Client:
                 "collector_type": "sdk",
                 "name": "ggate-python-sdk",
                 "agents": ["agent-framework"],
-                "metadata": {"language": "python", "version": SDK_VERSION},
+                "metadata": {
+                    "language": "python",
+                    "version": SDK_VERSION,
+                    "agent_name": self.config.agent_name,
+                    "team": self.config.team,
+                },
             }
         )
 
@@ -234,12 +239,26 @@ class Client:
 
 
 def init(**kwargs) -> Client:
+    """Configure the process-wide client.
+
+    ``agent_name`` and ``team`` are required — the Console lists a session under the agent's name
+    and holds its team accountable, and neither is something the SDK can infer from the process it
+    happens to be running in. Both may equivalently come from ``GGATE_AGENT_NAME`` / ``GGATE_TEAM``
+    for deployments that configure through the environment::
+
+        ggate.init(agent_name="JIRA Project Assistant", team="Platform Engineering")
+    """
     global _client
     _client = Client(Config.from_values(**kwargs))
     return _client
 
 
 def get_client() -> Client:
+    """The process-wide client, built from the environment when :func:`init` was never called.
+
+    That fallback still needs ``GGATE_AGENT_NAME`` and ``GGATE_TEAM``, and raises naming whichever
+    is absent.
+    """
     global _client
     if _client is None:
         _client = Client()

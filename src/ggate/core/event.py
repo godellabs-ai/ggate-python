@@ -2,8 +2,9 @@
 
 The shapes here mirror ``shared/ggate-core/src/event.rs`` exactly — that crate is the
 source of truth. An SDK event carries ``identity.agent_source = "agent-framework"``
-and ``collector.collector_type = "sdk"``; the specific AI framework travels in
-``collector.labels.framework`` and ``source.client``, which is what the Console uses
+and ``collector.collector_type = "sdk"``; the operator-declared agent name and owning
+team travel in ``identity.agent_name`` / ``identity.team``, and the specific AI framework
+in ``collector.labels.framework`` and ``source.client``, which is what the Console uses
 to render `agent-framework:<framework>` connectors.
 
 The event states only what the SDK actually knows. Anything the receiver can work out
@@ -291,6 +292,12 @@ class RuntimeEventBuilder:
                     "host": self.config.host,
                     "workstation_id": self.config.workstation_id,
                     "agent_source": "agent-framework",
+                    # What this deployment *is* and who owns it — declared at init(), never
+                    # inferred. `agent_source` only says an SDK reported the event; `agent_name`
+                    # is what the Console lists the session under, and `team` is the owner shown
+                    # beside the seat identity.
+                    "agent_name": self.config.agent_name,
+                    "team": self.config.team,
                     "agent_version": SDK_VERSION,
                     "install_source": "manual",
                 }

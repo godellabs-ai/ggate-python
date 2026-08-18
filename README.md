@@ -27,7 +27,11 @@ extras are available if you want pip to pull one in (`ggate[openai]`, `ggate[lan
 ```python
 import ggate
 
-ggate.init(mode="sync")  # default
+ggate.init(
+    agent_name="JIRA Project Assistant",  # required: what the Console lists this agent as
+    team="Platform Engineering",          # required: who owns it
+    mode="sync",                          # default
+)
 
 decision = ggate.scan_prompt("Summarize this document", framework="langchain", model="gpt-4o")
 if decision.blocked:
@@ -40,6 +44,23 @@ ggate.scan_response(
     usage={"input_tokens": 1200, "output_tokens": 240},  # optional turn telemetry
 )
 ```
+
+### Naming your agent
+
+`agent_name` and `team` are required, and `init()` raises without them (or without
+`GGATE_AGENT_NAME` / `GGATE_TEAM`). They are the two facts the SDK cannot work out for itself:
+
+- **`agent_name`** is what this agent *is*, as an operator would name it — `"JIRA Project
+  Assistant"`, not the framework it is built on. The Console lists sessions under this name, so
+  three assistants built on LangGraph stay three distinguishable agents. The framework is still
+  reported alongside it and still drives the connector view.
+- **`team`** is who is accountable for it. A deployed agent has no person at a keyboard, so the
+  seat identity falls back to the build machine's `<os-user>@<hostname>` — whoever ran the deploy,
+  not whoever owns the workload. The seat identity is still reported unchanged; `team` is the name
+  shown beside it.
+
+`agent_name` usually belongs in code (every install of an app is the same named agent), while
+`team` usually belongs in the environment (it varies per deployment).
 
 Framework instrumentation — see [docs/framework-coverage.md](docs/framework-coverage.md) for the
 full matrix of what each adapter hooks and where it can enforce:
@@ -110,13 +131,16 @@ The SDK never breaks the host application:
 
 ## Configuration
 
-`GGATE_CONSOLE_URL` and `GGATE_API_KEY` are required; everything else has a default. Identity
+`GGATE_CONSOLE_URL` and `GGATE_API_KEY` are required, as are the agent's name and owning team
+(in code or via `GGATE_AGENT_NAME` / `GGATE_TEAM`); everything else has a default. Identity
 falls back to the device config at `~/.ggate/config.yaml` when an agent installed on the same
 machine wrote one — read for identity only, so SDK events land under the same org/seat/device as
 that machine's other collectors. Environment variables:
 
 | Variable | Meaning | Default |
 |---|---|---|
+| `GGATE_AGENT_NAME` | agent name — **required** (or `agent_name`) | unset |
+| `GGATE_TEAM` | owning team — **required** (or `team`) | unset |
 | `GGATE_MODE` | `sync` (enforce) or `async` (observe) | `sync` |
 | `GGATE_CONSOLE_URL` | Console base URL, e.g. `https://godels-gate.example.com` — **required** | unset |
 | `GGATE_API_KEY` | Console IAM API key (`godel_...`) — **required** | unset |

@@ -31,7 +31,7 @@ GGATE_API_KEY=godel_... \
   /tmp/ggate-sdk-venv/bin/python - <<'PY'
 import ggate
 
-ggate.init(mode="sync")
+ggate.init(agent_name="Smoke Test", team="Platform Engineering", mode="sync")
 decision = ggate.scan_prompt("Godel's Gate SDK smoke test", framework="manual", model="test")
 print(decision.to_json())
 PY
@@ -53,7 +53,7 @@ prompt will block unless the policy says so.
 ```python
 import ggate
 
-ggate.init(mode="sync")
+ggate.init(agent_name="Smoke Test", team="Platform Engineering", mode="sync")
 decision = ggate.scan_prompt("YOUR_KNOWN_BLOCK_FIXTURE", enforce=False, framework="manual")
 assert decision.verdict == "block", decision.to_json()
 ```

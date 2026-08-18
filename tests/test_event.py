@@ -29,6 +29,22 @@ class EventTests(unittest.TestCase):
         self.assertIn("id", prompt)
         self.assertIn("timestamp", prompt)
 
+    def test_every_event_names_the_agent_and_its_owning_team(self):
+        builder = RuntimeEventBuilder(
+            Config.from_values(
+                mode="sync", agent_name="JIRA Project Assistant", team="Platform Engineering"
+            )
+        )
+        event, _ = builder.prompt("hello", framework="langgraph")
+
+        self.assertEqual(event["identity"]["agent_name"], "JIRA Project Assistant")
+        self.assertEqual(event["identity"]["team"], "Platform Engineering")
+        # The declared name replaces nothing: the framework still travels where the Console reads
+        # it for connector/logo resolution.
+        self.assertEqual(event["identity"]["agent_source"], "agent-framework")
+        self.assertEqual(event["collector"]["labels"]["framework"], "langgraph")
+        self.assertEqual(event["source"]["client"], "langgraph")
+
     def test_session_carries_only_established_correlation(self):
         builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
         anonymous, _ = builder.prompt("hello")

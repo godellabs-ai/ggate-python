@@ -52,6 +52,31 @@ class ConfigTests(unittest.TestCase):
             # A URL without a key (or the reverse) is not a usable Console.
             self.assertFalse(Config.from_values(console_url="https://godels-gate.example.com").configured)
 
+    def test_agent_identity_is_required_and_explicit_beats_environment(self):
+        # Unlike a missing Console (which fails open), an unnamed agent is refused at construction:
+        # it would otherwise mislabel every event it ever writes.
+        with patch.dict(os.environ, {}, clear=False):
+            for key in ("GGATE_AGENT_NAME", "GGATE_TEAM"):
+                os.environ.pop(key, None)
+            with self.assertRaisesRegex(ValueError, "agent_name is required"):
+                Config.from_values()
+            with self.assertRaisesRegex(ValueError, "team is required"):
+                Config.from_values(agent_name="Support Bot")
+            # Whitespace is not a name.
+            with self.assertRaisesRegex(ValueError, "agent_name is required"):
+                Config.from_values(agent_name="   ", team="Ops")
+
+        with patch.dict(
+            os.environ,
+            {"GGATE_AGENT_NAME": "Env Agent", "GGATE_TEAM": "Env Team"},
+            clear=False,
+        ):
+            self.assertEqual(Config.from_values().agent_name, "Env Agent")
+            self.assertEqual(Config.from_values().team, "Env Team")
+            self.assertEqual(
+                Config.from_values(agent_name="Explicit Agent").agent_name, "Explicit Agent"
+            )
+
     def test_redaction_is_off_by_default(self):
         # The Console is the detection engine; masking client-side would hide what it exists
         # to catch. An explicit choice still wins.

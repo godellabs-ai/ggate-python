@@ -18,7 +18,7 @@ import socket
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, NoReturn, Optional
 
 #: Scan budget in seconds when nothing is configured. A ceiling, not a per-call cost: a text
 #: scan answers in tens of milliseconds. Raise it (``GGATE_TIMEOUT_MS``) for prompts carrying
@@ -76,6 +76,25 @@ def _default_timeout() -> float:
         return DEFAULT_TIMEOUT
 
 
+def _required(name: str, env_var: str, example: str) -> NoReturn:
+    """Refuse to build a Config without an identity the SDK cannot infer.
+
+    Unlike a missing Console — which degrades to fail-open scans, so the host application keeps
+    working — an unnamed agent is a permanent labelling error in the event store: every event the
+    process ever writes lands under an anonymous agent, which no later configuration can repair.
+    So it is caught at construction instead.
+    """
+    raise ValueError(
+        f"ggate: {name} is required. Pass {name}={example!r} to init(), or set {env_var}."
+    )
+
+
+def _non_blank(value: Optional[str]) -> Optional[str]:
+    """The value with surrounding whitespace stripped, or None — so blanks never count."""
+    text = (value or "").strip()
+    return text or None
+
+
 def _default_user() -> Optional[str]:
     """Seat identity, matching the Rust collectors' `seat_user`: explicit GGATE_USER /
     GGATE_USER_EMAIL, else the device config's `user_email`, else `<os-user>@<hostname>`."""
@@ -101,6 +120,19 @@ def _default_user() -> Optional[str]:
 
 @dataclass(frozen=True)
 class Config:
+    #: What this agent is, as an operator would name it — ``"JIRA Project Assistant"``, not the
+    #: framework it is built on. Required (``init(agent_name=...)`` or ``GGATE_AGENT_NAME``): it
+    #: travels as ``identity.agent_name`` and is what the Console's Session column shows, so two
+    #: assistants built on the same framework stay distinguishable.
+    agent_name: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_AGENT_NAME"))
+    #: The team or owner accountable for this agent — ``"Platform Engineering"``. Required
+    #: (``init(team=...)`` or ``GGATE_TEAM``).
+    #:
+    #: A deployed agent has no person at a keyboard, so :attr:`user` falls back to the build
+    #: machine's ``<os-user>@<hostname>`` — whoever ran the deploy, not whoever owns the workload.
+    #: The seat identity is still reported unchanged (the Console scopes event access by it); this
+    #: is the name shown beside it.
+    team: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_TEAM"))
     mode: str = field(default_factory=lambda: os.getenv("GGATE_MODE", "sync"))
     timeout: float = field(default_factory=_default_timeout)
     # Where scans go. Both are required; without them every scan fails open with a message
@@ -140,6 +172,17 @@ class Config:
     def __post_init__(self):
         if self.collector_id is None:
             object.__setattr__(self, "collector_id", f"{self.workstation_id}:ggate-python-sdk")
+        object.__setattr__(
+            self,
+            "agent_name",
+            _non_blank(self.agent_name)
+            or _required("agent_name", "GGATE_AGENT_NAME", "JIRA Project Assistant"),
+        )
+        object.__setattr__(
+            self,
+            "team",
+            _non_blank(self.team) or _required("team", "GGATE_TEAM", "Platform Engineering"),
+        )
 
     @property
     def configured(self) -> bool:
