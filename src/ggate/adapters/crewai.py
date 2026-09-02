@@ -76,7 +76,7 @@ class GgateCrewAIListener(BaseEventListener):
         if started:
             self.sdk.scan_tool_call(tool, input_summary=textify(event), enforce=True, **metadata)
         else:
-            self.sdk.scan_tool_result(tool, textify(event), **metadata)
+            self.sdk.scan_tool_result(tool, textify(event), enforce=True, **metadata)
 
 
 def instrument(*, sdk_client=None, **metadata):

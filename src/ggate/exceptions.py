@@ -12,7 +12,7 @@ class GgateTransportError(GgateError):
 
 
 class GgateBlockedError(GgateError):
-    """Raised by enforcing adapters on a block or hard_block verdict."""
+    """Raised by enforcing adapters on a block verdict."""
 
     def __init__(self, decision):
         self.decision = decision

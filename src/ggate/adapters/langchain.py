@@ -48,7 +48,9 @@ class GgateCallbackHandler(BaseCallbackHandler):
 
     def on_tool_end(self, output, **kwargs):
         tool = kwargs.get("name") or "tool"
-        self.sdk.scan_tool_result(tool, str(output), framework=self.framework, **self._meta(kwargs))
+        self.sdk.scan_tool_result(
+            tool, str(output), enforce=True, framework=self.framework, **self._meta(kwargs)
+        )
 
     def _meta(self, kwargs):
         metadata = dict(self.metadata)

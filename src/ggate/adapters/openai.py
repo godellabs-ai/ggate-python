@@ -226,6 +226,7 @@ class _ThreadRunsWrapper:
             self._sdk.scan_tool_result(
                 str(_get(output, "tool_call_id") or "tool"),
                 _input_to_text(_get(output, "output")),
+                enforce=True,
                 framework=self._framework,
                 provider="openai",
             )

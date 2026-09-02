@@ -80,15 +80,19 @@ The Console is the SDK's only destination. Set its URL and an IAM API key (Conso
 **Admin → API keys**) and scans go to `POST /api/v1/scan`, which runs the full pipeline —
 normalize, OCR/extraction of image and file attachments, deterministic rules, the security
 classifier, DLP, threat intel, document intelligence, and policy — records the event, and
-returns the verdict:
+returns the verdict plus any topic/sensitivity classification:
 
 ```bash
 GGATE_CONSOLE_URL=https://godels-gate.example.com
 GGATE_API_KEY=godel_...
 ```
 
-The API key is exchanged once at `/api/v1/agent/token` for a short-lived JWT, so per-scan auth is
-a stateless signature check rather than a password hash.
+The API key is exchanged at `/api/v1/detection-engine/token` for an access/refresh token pair.
+The SDK rotates that pair through `/api/v1/detection-engine/token/refresh`, so per-scan auth is a
+stateless signature check and hourly access-token renewal does not repeat the API-key hash.
+
+For a Console signed by a private CA, set `GGATE_CONSOLE_CA_CERT=/path/to/ca.pem`; TLS verification
+remains enabled.
 
 Both are required. With either missing the SDK logs one warning at startup and every scan fails
 open with a message naming what is unset — a configuration mistake must not break the
@@ -100,23 +104,39 @@ deployments that would rather lose those detections than let the content leave t
 
 ## Verdicts
 
-A scan returns a `Decision`: `verdict` (`pass` | `warn` | `block` | `hard_block` | `system`),
+A scan returns a `Decision`: `verdict` (`pass` | `warn` | `block` | `system`),
 `message`, `reason_codes`, and — on warn/block — a `detection` headline naming which protection
 fired (`{"source": "sensitive_data", "detail": "aws_access_key_id", ...}`). `decision.blocked` /
 `decision.allowed` are the convenience accessors; passing `enforce=True` raises
 `GgateBlockedError` on a block instead.
 
+When rclassifier produces topic/sensitivity output, a waited scan also returns
+`decision.document_intelligence` in the same normalized shape stored in event JSON:
+
+```python
+intel = decision.document_intelligence
+if intel:
+    print(intel.taxonomy.topic.label, intel.sensitivity.severity)
+    print(intel.sensitivity.sensitive_data_classes)
+```
+
+This field is classification context, not an enforcement finding. It is available only when the
+call waits for the Console (sync prompt/tool/file/shell/web scans, or `wait=True` on response and
+tool-result scans). Queued calls return an immediate local pass with `document_intelligence=None`.
+
 Async applications have `await`-able twins of every scan call (`scan_prompt_async`,
-`scan_response_async`, `scan_tool_call_async`, `scan_tool_result_async`).
+`scan_response_async`, `scan_tool_call_async`, `scan_tool_result_async`, `scan_file_async`,
+`scan_shell_async`, and `scan_web_async`).
 
 ## Latency and failure semantics
 
 The SDK never breaks the host application:
 
-- **Sync mode** blocks a prompt/tool-call scan until the verdict, bounded by the scan budget
+- **Sync mode** blocks prompt, tool-call, file, shell, and web scans until the verdict, bounded by the scan budget
   (`GGATE_TIMEOUT_MS`, else 4s — a ceiling, not a per-call cost; raise it for prompts carrying
-  attachments, where the Console also extracts and OCRs the file). Responses, tool results, and
-  file events are queued in the background regardless of mode.
+  attachments, where the Console also extracts and OCRs the file). Responses and tool results are
+  queued by default; pass `wait=True` to receive classification, or `enforce=True` for a
+  block-capable tool-result boundary.
 - **Async mode** (`ggate.init(mode="async")`) queues everything and always returns an immediate
   pass — observability without gating.
 - **Fail open**: any problem reaching the Console (unreachable, restarting, slow, rejected key,
@@ -144,6 +164,7 @@ that machine's other collectors. Environment variables:
 | `GGATE_MODE` | `sync` (enforce) or `async` (observe) | `sync` |
 | `GGATE_CONSOLE_URL` | Console base URL, e.g. `https://godels-gate.example.com` — **required** | unset |
 | `GGATE_API_KEY` | Console IAM API key (`godel_...`) — **required** | unset |
+| `GGATE_CONSOLE_CA_CERT` | PEM CA used to verify a private-CA Console | system trust |
 | `GGATE_TIMEOUT_MS` | sync scan budget | 4000 |
 | `GGATE_DISABLED` | `1` disables the SDK entirely | off |
 | `GGATE_HOME` | where the device config is looked for | `~/.ggate` |

@@ -14,7 +14,7 @@ conversation.
 | CrewAI | Yes | N/A | CrewAI event listener | Prompt/tool preflight where start events fire |
 | AutoGen / AG2 | Yes | Yes | Public `run` / stream method wrapper | Run-boundary preflight |
 | OpenAI Chat/Responses | Yes | Yes | OpenAI client wrapper | Prompt preflight, response audit |
-| OpenAI Assistants | Yes | Yes | Files, thread messages, thread runs, tool outputs | Message/run/file preflight; response/tool audit |
+| OpenAI Assistants | Yes | Yes | Files, thread messages, thread runs, tool outputs | Message/run/file preflight; response audit; tool-output enforcement |
 | OpenAI Swarm | Yes | Yes | Swarm `run(...)` wrapper plus Chat Completions underneath | Run-boundary preflight |
 | LlamaIndex | Yes | Yes | Callback handler | Event-start preflight, event-end audit |
 | Haystack | Yes | N/A | Pipeline/Agent `run` wrapper | Run-boundary preflight |
@@ -53,9 +53,8 @@ conversation.
   framework writes directly to disk without an event or API object, the customer must call
   `scan_file(...)` or attach generated-file metadata manually.
 - Python-only frameworks are intentionally not exposed as Node adapters.
-- SDK-specific Rust enum variants are still needed in the main product for first-class UI labels.
-  Until then the SDK emits `agent_source: "generic"` and stores the precise framework in
-  `collector.labels.framework`.
+- SDK events emit `agent_source: "agent-framework"`; the precise framework remains in
+  `collector.labels.framework` and `source.client` for connector/UI resolution.
 
 ## References
 

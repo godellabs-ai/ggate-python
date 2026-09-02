@@ -33,11 +33,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+from urllib.parse import urlparse
 
 from .config import Config
 from .redactor import RedactionSummary, redact_text, sha256_hex
 
-SDK_VERSION = "0.2.0"
+SDK_VERSION = "0.3.0"
 
 # Normalized to the Rust `std::env::consts` vocabulary the rest of the fleet reports
 # (platform_os is a Console dimension, so casing must match the hook collectors).
@@ -212,27 +213,43 @@ class RuntimeEventBuilder:
         *,
         attachments: Optional[Iterable[Attachment | Mapping[str, Any]]] = None,
         stop_reason: Optional[str] = None,
+        thinking: Optional[str] = None,
+        thinking_len: Optional[int] = None,
+        thinking_redacted: bool = False,
         model: Optional[str] = None,
         usage: Optional[Mapping[str, Any]] = None,
         api_calls: Optional[int] = None,
         tool_calls: Optional[int] = None,
         duration_ms: Optional[int] = None,
+        subagent_type: Optional[str] = None,
         **metadata,
     ) -> Tuple[Dict[str, Any], RedactionSummary]:
         payload = {
             "surface": "response",
             "text": text,
+            "thinking": thinking,
+            "thinking_len": thinking_len,
+            "thinking_redacted": thinking_redacted,
             "model": model,
             "stop_reason": stop_reason,
             "usage": _token_usage(usage),
             "api_calls": api_calls,
             "tool_calls": tool_calls,
             "duration_ms": duration_ms,
+            "subagent_type": subagent_type,
             "attachments": self._attachments(attachments),
         }
         return self._event("post", payload, primary_text=text, model=model, **metadata)
 
-    def file_event(self, path: str, *, action: str = "read", content_len: Optional[int] = None, **metadata):
+    def file_event(
+        self,
+        path: str,
+        *,
+        action: str = "read",
+        content_len: Optional[int] = None,
+        content: Optional[str] = None,
+        **metadata,
+    ):
         if action not in _FILE_ACTIONS:
             raise ValueError(f"action must be one of {sorted(_FILE_ACTIONS)}, got {action!r}")
         payload = {
@@ -240,10 +257,20 @@ class RuntimeEventBuilder:
             "action": action,
             "path": path,
             "content_len": content_len,
+            "content": content,
         }
-        return self._event("post", payload, primary_text=path, **metadata)
+        return self._event("pre", payload, primary_text=content or path, **metadata)
 
-    def tool_call(self, tool: str, *, input_summary=None, server: Optional[str] = None, service=None, **metadata):
+    def tool_call(
+        self,
+        tool: str,
+        *,
+        input_summary=None,
+        server: Optional[str] = None,
+        service=None,
+        server_info=None,
+        **metadata,
+    ):
         text = str(input_summary) if input_summary is not None else tool
         payload = {
             "surface": "mcp_tool",
@@ -253,19 +280,59 @@ class RuntimeEventBuilder:
             "tool": tool,
             "input_summary": input_summary,
             "service": service,
+            "server_info": server_info,
         }
         return self._event("pre", payload, primary_text=text, **metadata)
 
-    def tool_result(self, tool: str, output: str, *, kind: str = "other", server: Optional[str] = None, **metadata):
+    def tool_result(
+        self,
+        tool: str,
+        output: str,
+        *,
+        kind: str = "other",
+        server: Optional[str] = None,
+        service: Optional[str] = None,
+        output_len: Optional[int] = None,
+        truncated: bool = False,
+        exit_code: Optional[int] = None,
+        ok: bool = True,
+        duration_ms: Optional[int] = None,
+        **metadata,
+    ):
         payload = {
             "surface": "tool_result",
             "kind": kind if kind in _TOOL_RESULT_KINDS else "other",
             "tool": tool,
             "server": server,
+            "service": service,
             "output": output,
-            "ok": True,
+            "output_len": output_len,
+            "truncated": truncated,
+            "exit_code": exit_code,
+            "ok": ok,
+            "duration_ms": duration_ms,
         }
         return self._event("post", payload, primary_text=output, **metadata)
+
+    def shell(self, command: str, *, argv: Optional[Iterable[str]] = None, **metadata):
+        payload = {"surface": "shell", "command": command, "argv": list(argv or [])}
+        return self._event("pre", payload, primary_text=command, **metadata)
+
+    def web(
+        self,
+        url: str,
+        *,
+        method: Optional[str] = None,
+        domain: Optional[str] = None,
+        **metadata,
+    ):
+        payload = {
+            "surface": "web",
+            "url": url,
+            "method": method,
+            "domain": domain or urlparse(url).hostname,
+        }
+        return self._event("pre", payload, primary_text=url, **metadata)
 
     def _event(self, phase: str, payload: Dict[str, Any], *, primary_text: str, **metadata):
         merged = dict(_context.get())
@@ -358,7 +425,7 @@ class RuntimeEventBuilder:
     def _redact_payload(self, payload: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         count = 0
         clean = dict(payload)
-        for key in ("text", "output", "command"):
+        for key in ("text", "thinking", "output", "command", "content"):
             value = clean.get(key)
             if isinstance(value, str):
                 clean[key], changed = redact_text(value)

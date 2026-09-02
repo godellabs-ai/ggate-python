@@ -181,11 +181,97 @@ class Client:
             raise GgateBlockedError(decision)
         return decision
 
-    def scan_file(self, path: str, *, action: str = "read", **metadata) -> Decision:
+    def scan_file(
+        self,
+        path: str,
+        *,
+        action: str = "read",
+        content: Optional[str] = None,
+        enforce: bool = False,
+        **metadata,
+    ) -> Decision:
         file_path = Path(path)
         content_len = file_path.stat().st_size if file_path.exists() else None
-        event, redaction = self.builder.file_event(path, action=action, content_len=content_len, **metadata)
-        return self._send_or_queue(event, redaction.to_json(), wait=False)
+        if content is None and file_path.exists() and self.config.capture_file_text:
+            try:
+                content = attachment_from_path(path, source="file_ref", config=self.config).text
+            except OSError:
+                # A path-only policy scan is still useful when the process cannot read content.
+                pass
+        event, redaction = self.builder.file_event(
+            path, action=action, content_len=content_len, content=content, **metadata
+        )
+        decision = self._send_or_queue(
+            event, redaction.to_json(), wait=self.config.mode == "sync"
+        )
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
+
+    async def scan_file_async(
+        self,
+        path: str,
+        *,
+        action: str = "read",
+        content: Optional[str] = None,
+        enforce: bool = False,
+        **metadata,
+    ) -> Decision:
+        file_path = Path(path)
+        content_len = file_path.stat().st_size if file_path.exists() else None
+        if content is None and file_path.exists() and self.config.capture_file_text:
+            try:
+                content = attachment_from_path(path, source="file_ref", config=self.config).text
+            except OSError:
+                # A path-only policy scan is still useful when the process cannot read content.
+                pass
+        event, redaction = self.builder.file_event(
+            path, action=action, content_len=content_len, content=content, **metadata
+        )
+        decision = await self._send_or_queue_async(
+            event, redaction.to_json(), wait=self.config.mode == "sync"
+        )
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
+
+    def scan_shell(self, command: str, *, argv=None, enforce: bool = False, **metadata) -> Decision:
+        event, redaction = self.builder.shell(command, argv=argv, **metadata)
+        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync")
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
+
+    async def scan_shell_async(
+        self, command: str, *, argv=None, enforce: bool = False, **metadata
+    ) -> Decision:
+        event, redaction = self.builder.shell(command, argv=argv, **metadata)
+        decision = await self._send_or_queue_async(
+            event, redaction.to_json(), wait=self.config.mode == "sync"
+        )
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
+
+    def scan_web(
+        self, url: str, *, method=None, domain=None, enforce: bool = False, **metadata
+    ) -> Decision:
+        event, redaction = self.builder.web(url, method=method, domain=domain, **metadata)
+        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync")
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
+
+    async def scan_web_async(
+        self, url: str, *, method=None, domain=None, enforce: bool = False, **metadata
+    ) -> Decision:
+        event, redaction = self.builder.web(url, method=method, domain=domain, **metadata)
+        decision = await self._send_or_queue_async(
+            event, redaction.to_json(), wait=self.config.mode == "sync"
+        )
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
 
     def attachment_from_path(self, path: str, *, source: str = "upload") -> Attachment:
         return attachment_from_path(path, source=source, config=self.config)

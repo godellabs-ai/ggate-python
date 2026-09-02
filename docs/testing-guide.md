@@ -87,7 +87,7 @@ Every framework above has a Python adapter; the Node SDK covers a subset (see it
 
 - Console unreachable or unconfigured: SDK returns fail-open pass and the app still works.
 - Console slow: sync timeout is bounded by `GGATE_TIMEOUT_MS`; async mode does not block.
-- Rejected/expired API key: the SDK re-exchanges once, then fails open rather than throwing.
+- Expired access token: the SDK refreshes its pair; rejected refresh/API key fails open rather than throwing.
 - Queue overflow: async queue drops oldest events and does not grow unbounded.
 - Blocked prompt: provider call is not made.
 - Blocked tool call: tool function is not made where the framework filter/wrapper supports preflight.

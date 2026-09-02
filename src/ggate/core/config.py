@@ -139,6 +139,11 @@ class Config:
     # saying so (see `Client`), because a missing setting must never break the host app.
     console_url: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_CONSOLE_URL"))
     api_key: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_API_KEY"))
+    # PEM CA certificate used to verify a Console signed by a private CA. Standard public CA trust
+    # remains the default; TLS verification is never disabled by this SDK.
+    console_ca_cert: Optional[str] = field(
+        default_factory=lambda: os.getenv("GGATE_CONSOLE_CA_CERT")
+    )
     queue_max: int = field(default_factory=lambda: _int_env("GGATE_QUEUE_MAX", 1024))
     enabled: bool = field(default_factory=lambda: not _bool_env("GGATE_DISABLED", False))
     org_id: str = field(
@@ -172,6 +177,8 @@ class Config:
     def __post_init__(self):
         if self.collector_id is None:
             object.__setattr__(self, "collector_id", f"{self.workstation_id}:ggate-python-sdk")
+        if self.console_ca_cert:
+            object.__setattr__(self, "console_ca_cert", str(Path(self.console_ca_cert).expanduser()))
         object.__setattr__(
             self,
             "agent_name",

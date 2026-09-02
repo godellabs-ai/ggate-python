@@ -92,6 +92,51 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(decision.blocked)
         self.assertEqual(decision.detection["source"], "sensitive_data")
 
+    def test_waited_scan_returns_document_topic_and_sensitivity(self):
+        transport = FakeTransport(
+            {
+                "verdict": "pass",
+                "message": "allowed",
+                "document_intelligence": {
+                    "taxonomy": {
+                        "topic": {"label": "INVESTOR_RELATIONS", "confidence": 0.94},
+                        "content_types": ["FINANCIAL_REPORT"],
+                        "business_domains": ["FINANCE"],
+                        "overall_confidence": 0.91,
+                    },
+                    "sensitivity": {
+                        "severity": "high",
+                        "business_confidentiality_classes": [
+                            "material_non_public_information"
+                        ],
+                        "required_handling": ["HUMAN_REVIEW_BEFORE_EXTERNAL_SEND"],
+                    },
+                    "matched_text": "Quarterly guidance",
+                },
+            }
+        )
+        client = Client(Config.from_values(mode="sync"), transport=transport)
+
+        decision = client.scan_prompt("Quarterly guidance")
+
+        self.assertEqual(
+            decision.document_intelligence.taxonomy.topic.label, "INVESTOR_RELATIONS"
+        )
+        self.assertEqual(decision.document_intelligence.sensitivity.severity, "high")
+        self.assertEqual(
+            decision.document_intelligence.sensitivity.business_confidentiality_classes,
+            ["material_non_public_information"],
+        )
+
+    def test_legacy_hard_block_is_normalized_to_block(self):
+        client = Client(
+            Config.from_values(mode="sync"),
+            transport=FakeTransport({"verdict": "hard_block", "message": "blocked"}),
+        )
+        decision = client.scan_prompt("hello")
+        self.assertEqual(decision.verdict, "block")
+        self.assertTrue(decision.blocked)
+
     def test_without_a_console_every_scan_fails_open(self):
         # The SDK has exactly one destination. With no Console configured there is nowhere to
         # scan, and the contract is to allow the call rather than break the application.

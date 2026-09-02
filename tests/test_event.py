@@ -95,6 +95,35 @@ class EventTests(unittest.TestCase):
         self.assertEqual(payload["duration_ms"], 1200)
         self.assertEqual(payload["api_calls"], 2)
 
+    def test_current_response_tool_and_policy_surface_fields(self):
+        builder = RuntimeEventBuilder(Config.from_values(mode="sync"))
+        response, _ = builder.response(
+            "done", thinking="analysis", thinking_redacted=False, subagent_type="Explore"
+        )
+        tool_call, _ = builder.tool_call(
+            "search", input_summary={"q": "x"}, server_info={"transport": "stdio"}
+        )
+        tool_result, _ = builder.tool_result(
+            "bash",
+            "failed",
+            kind="shell",
+            ok=False,
+            exit_code=2,
+            output_len=100,
+            truncated=True,
+            duration_ms=50,
+        )
+        shell, _ = builder.shell("curl https://example.com", argv=["curl", "https://example.com"])
+        web, _ = builder.web("https://example.com/path", method="GET")
+
+        self.assertEqual(response["payload"]["thinking"], "analysis")
+        self.assertEqual(response["payload"]["subagent_type"], "Explore")
+        self.assertEqual(tool_call["payload"]["server_info"], {"transport": "stdio"})
+        self.assertFalse(tool_result["payload"]["ok"])
+        self.assertEqual(tool_result["payload"]["exit_code"], 2)
+        self.assertEqual(shell["payload"]["surface"], "shell")
+        self.assertEqual(web["payload"]["domain"], "example.com")
+
     def test_tool_call_defaults_server_to_framework_and_redacts_input(self):
         builder = RuntimeEventBuilder(Config.from_values(mode="sync", redact=True))
         event, redaction = builder.tool_call(

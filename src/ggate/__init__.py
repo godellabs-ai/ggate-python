@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from .core.client import Client, get_client, init, monitor
-from .core.decision import Decision
+from .core.decision import (
+    Decision,
+    DocumentIntelligence,
+    DocumentTaxonomy,
+    SensitivityClassification,
+    TopicClassification,
+)
 from .core.event import Attachment
 from .exceptions import GgateBlockedError, GgateError, GgateTransportError
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def instrument(framework: str, **kwargs):
@@ -79,6 +85,26 @@ def scan_file(path: str, **kwargs) -> Decision:
     return get_client().scan_file(path, **kwargs)
 
 
+async def scan_file_async(path: str, **kwargs) -> Decision:
+    return await get_client().scan_file_async(path, **kwargs)
+
+
+def scan_shell(command: str, **kwargs) -> Decision:
+    return get_client().scan_shell(command, **kwargs)
+
+
+async def scan_shell_async(command: str, **kwargs) -> Decision:
+    return await get_client().scan_shell_async(command, **kwargs)
+
+
+def scan_web(url: str, **kwargs) -> Decision:
+    return get_client().scan_web(url, **kwargs)
+
+
+async def scan_web_async(url: str, **kwargs) -> Decision:
+    return await get_client().scan_web_async(url, **kwargs)
+
+
 def flush(timeout: float | None = None) -> bool:
     """Drain queued events. Returns False when the deadline expired with events left."""
     return get_client().flush(timeout)
@@ -104,21 +130,30 @@ __all__ = [
     "Attachment",
     "Client",
     "Decision",
+    "DocumentIntelligence",
+    "DocumentTaxonomy",
     "GgateBlockedError",
     "GgateError",
     "GgateTransportError",
+    "SensitivityClassification",
+    "TopicClassification",
     "flush",
     "get_client",
     "init",
     "instrument",
     "monitor",
     "scan_file",
+    "scan_file_async",
     "scan_prompt",
     "scan_prompt_async",
     "scan_response",
     "scan_response_async",
+    "scan_shell",
+    "scan_shell_async",
     "scan_tool_call",
     "scan_tool_call_async",
     "scan_tool_result",
     "scan_tool_result_async",
+    "scan_web",
+    "scan_web_async",
 ]
