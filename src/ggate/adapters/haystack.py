@@ -28,7 +28,9 @@ def wrap_target(target, *, sdk_client=None, framework: str = "haystack", **metad
 
     def before(args, kwargs, fw):
         payload = kwargs.get("data") or kwargs.get("messages") or kwargs.get("user_prompt") or (args[0] if args else None)
-        sdk.scan_prompt(textify(payload), enforce=True, framework=fw, **metadata)
+        from ._common import extract_attachments_from_value
+        attachments = extract_attachments_from_value(kwargs) + extract_attachments_from_value(args)
+        sdk.scan_prompt(textify(payload), attachments=attachments, enforce=True, framework=fw, **metadata)
 
     def after(result, fw):
         text = textify(result)

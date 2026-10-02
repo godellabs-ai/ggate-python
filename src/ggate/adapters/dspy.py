@@ -26,7 +26,10 @@ def wrap_module(module, *, sdk_client=None, framework: str = "dspy", **metadata)
     sdk = sdk_client or get_client()
 
     def before(args, kwargs, fw):
-        sdk.scan_prompt(textify(kwargs or args), enforce=True, framework=fw, **metadata)
+        from ._common import extract_attachments_from_value
+        attachments = extract_attachments_from_value(kwargs) + extract_attachments_from_value(args)
+        text = textify({key: value for key, value in kwargs.items() if isinstance(value, str)} or args)
+        sdk.scan_prompt(text, attachments=attachments, enforce=True, framework=fw, **metadata)
 
     def after(result, fw):
         text = textify(result)

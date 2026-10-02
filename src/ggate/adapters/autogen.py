@@ -30,6 +30,8 @@ def wrap_agent(agent, *, sdk_client=None, framework: str = "autogen", **metadata
 
     def before(args, kwargs, fw):
         prompt = kwargs.get("task") or kwargs.get("message") or (args[0] if args else None)
+        if isinstance(prompt, (list, tuple)):
+            prompt = [part for part in prompt if isinstance(part, str)] or prompt
         from ._common import extract_attachments_from_value
         attachments = extract_attachments_from_value(kwargs)
         attachments.extend(extract_attachments_from_value(args))
@@ -40,7 +42,8 @@ def wrap_agent(agent, *, sdk_client=None, framework: str = "autogen", **metadata
         if text:
             sdk.scan_response(text, framework=fw, **metadata)
 
-    for method in ("run", "run_stream", "a_run", "a_run_stream", "initiate_chat"):
+    # AutoGen AgentChat: run/run_stream. AG2 0.x: initiate_chat. AG2 1.x: ask/run.
+    for method in ("run", "run_stream", "a_run", "a_run_stream", "initiate_chat", "ask", "a_ask"):
         wrap_method(agent, method, sync_around(before, after, framework))
     return agent
 

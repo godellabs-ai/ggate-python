@@ -18,6 +18,10 @@ def langchain_callback(*, framework: str = "langchain", sdk_client=None, **metad
 
 
 class GgateCallbackHandler(BaseCallbackHandler):
+    # LangChain logs and ignores exceptions from callback handlers unless `raise_error` is set, which
+    # turned every block into a logged warning while the model call went ahead.
+    raise_error = True
+
     def __init__(self, *, framework: str = "langchain", sdk_client=None, metadata=None):
         super().__init__()
         self.framework = framework

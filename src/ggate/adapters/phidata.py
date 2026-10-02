@@ -26,8 +26,10 @@ def wrap_agent(agent, *, sdk_client=None, framework: str = "phidata", **metadata
     sdk = sdk_client or get_client()
 
     def before(args, kwargs, fw):
-        prompt = kwargs.get("message") or kwargs.get("prompt") or (args[0] if args else None)
-        sdk.scan_prompt(textify(prompt), enforce=True, framework=fw, **metadata)
+        prompt = kwargs.get("input") or kwargs.get("message") or kwargs.get("prompt") or (args[0] if args else None)
+        from ._common import extract_attachments_from_value
+        attachments = extract_attachments_from_value(kwargs) + extract_attachments_from_value(args)
+        sdk.scan_prompt(textify(prompt), attachments=attachments, enforce=True, framework=fw, **metadata)
 
     def after(result, fw):
         text = textify(result)

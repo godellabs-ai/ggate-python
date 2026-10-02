@@ -63,9 +63,12 @@ class _CompletionsWrapper:
         return getattr(self._target, name)
 
     def create(self, *args, **kwargs):
-        prompt = _messages_to_text(kwargs.get("messages") or _arg_at(args, 1) or [])
+        messages = kwargs.get("messages") or _arg_at(args, 1) or []
+        prompt = _messages_to_text(messages)
         model = kwargs.get("model") or _arg_at(args, 0)
-        self._sdk.scan_prompt(prompt, enforce=True, framework=self._framework, provider="openai", model=model)
+        from ._common import extract_attachments_from_value
+        self._sdk.scan_prompt(prompt, attachments=extract_attachments_from_value(_last_user(messages)), enforce=True,
+                              framework=self._framework, provider="openai", model=model)
         result = self._target.create(*args, **kwargs)
         if inspect.isawaitable(result):
             return _await_and_scan(result, self._sdk, self._framework, model)
@@ -75,7 +78,7 @@ class _CompletionsWrapper:
     def _scan_result(self, result, model):
         text = _response_to_text(result)
         if text:
-            self._sdk.scan_response(text, framework=self._framework, provider="openai", model=model)
+            self._sdk.scan_response(text, framework=self._framework, provider="openai", model=model, **_reasoning(result))
 
 
 class _ResponsesWrapper:
@@ -90,9 +93,12 @@ class _ResponsesWrapper:
         return getattr(self._target, name)
 
     def create(self, *args, **kwargs):
-        prompt = _input_to_text(kwargs.get("input") or _arg_at(args, 0))
+        request_input = kwargs.get("input") or _arg_at(args, 0)
+        prompt = _input_to_text(request_input)
         model = kwargs.get("model")
-        self._sdk.scan_prompt(prompt, enforce=True, framework=self._framework, provider="openai", model=model)
+        from ._common import extract_attachments_from_value
+        self._sdk.scan_prompt(prompt, attachments=extract_attachments_from_value(request_input), enforce=True,
+                              framework=self._framework, provider="openai", model=model)
         result = self._target.create(*args, **kwargs)
         if inspect.isawaitable(result):
             return _await_and_scan(result, self._sdk, self._framework, model)
@@ -242,9 +248,12 @@ class _RunMethodWrapper:
 
     def run(self, *args, **kwargs):
         if not self._response_only:
-            prompt = _input_to_text(kwargs.get("messages") or kwargs.get("input") or kwargs.get("task") or args)
-            if prompt:
-                self._sdk.scan_prompt(prompt, enforce=True, framework=self._framework, provider="openai")
+            request = kwargs.get("messages") or kwargs.get("input") or kwargs.get("task") or args
+            prompt = _input_to_text(request)
+            from ._common import extract_attachments_from_value
+            attachments = extract_attachments_from_value(_last_user(request) if isinstance(request, list) else request)
+            if prompt or attachments:
+                self._sdk.scan_prompt(prompt, attachments=attachments, enforce=True, framework=self._framework, provider="openai")
         result = self._target(*args, **kwargs)
         if inspect.isawaitable(result):
             return _await_and_scan(result, self._sdk, self._framework, kwargs.get("model"))
@@ -258,8 +267,35 @@ async def _await_and_scan(awaitable, sdk, framework, model):
     result = await awaitable
     text = _response_to_text(result)
     if text:
-        await sdk.scan_response_async(text, framework=framework, provider="openai", model=model)
+        await sdk.scan_response_async(text, framework=framework, provider="openai", model=model, **_reasoning(result))
     return result
+
+
+def _last_user(messages):
+    """The newest user message: earlier turns' files were scanned when they were sent."""
+    for message in reversed(list(messages or [])):
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role == "user":
+            return message
+    return None
+
+
+def _reasoning(result) -> dict:
+    """The model's reasoning, when the provider returns it (`reasoning_content` / `reasoning`)."""
+    parts = []
+    for choice in _get(result, "choices") or []:
+        message = _get(choice, "message")
+        extra = getattr(message, "model_extra", None) or {}
+        for key in ("reasoning_content", "reasoning"):
+            value = _get(message, key) if not isinstance(message, dict) else message.get(key)
+            value = value or extra.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+                break
+    if not parts:
+        return {}
+    thinking = "\n".join(parts)
+    return {"thinking": thinking, "thinking_len": len(thinking)}
 
 
 def _arg_at(args, index):

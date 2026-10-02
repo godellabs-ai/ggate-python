@@ -32,6 +32,17 @@ from .config import Config
 _TOKEN_SLACK_SECS = 60.0
 
 
+def _auth_failure(step: str, status: int) -> str:
+    """Name an HTTP failure honestly: only a 401 means the Console rejected the key. A 403 usually comes
+    from a proxy or WAF in front of the Console (e.g. Cloudflare bot rules) and never reached it."""
+    if status == 401:
+        return f"console rejected the API key ({step} HTTP 401)"
+    if status == 403:
+        return (f"console request forbidden ({step} HTTP 403): usually a proxy or WAF in front of the "
+                "Console blocking this client, not a bad API key")
+    return f"console {step} failed: HTTP {status}"
+
+
 class ConsoleTransport:
     def __init__(self, config: Config):
         self.config = config
@@ -113,9 +124,7 @@ class ConsoleTransport:
                 with self._urlopen(http_request) as response:
                     data = json.loads(response.read())
             except urllib.error.HTTPError as exc:
-                raise GgateTransportError(
-                    f"console rejected the API key (token exchange HTTP {exc.code})"
-                ) from exc
+                raise GgateTransportError(_auth_failure("token exchange", exc.code)) from exc
             except (OSError, ValueError) as exc:
                 raise GgateTransportError(f"console unreachable ({self._base_url}): {exc}") from exc
             return self._accept_token_pair(data, "exchange")
@@ -156,6 +165,11 @@ class ConsoleTransport:
         return self._access_token
 
     def _urlopen(self, request):
+        # urllib's default "Python-urllib/x.y" is rejected by common edge bot filters (Cloudflare
+        # error 1010), which made every scan fail open; identify as the SDK instead.
+        if not request.has_header("User-agent"):
+            from .event import SDK_VERSION
+            request.add_header("User-Agent", f"ggate-python-sdk/{SDK_VERSION}")
         kwargs = {"timeout": self.config.timeout}
         if self._ssl_context is not None:
             kwargs["context"] = self._ssl_context

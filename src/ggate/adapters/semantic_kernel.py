@@ -32,33 +32,38 @@ class SemanticKernelMonitor:
             pass
         return kernel
 
+    # Semantic Kernel results must be its own FunctionResult objects, so a block is raised as
+    # GgateBlockedError (the kernel wraps it in KernelInvokeException) instead of writing a string
+    # into the context, which failed validation and broke every invocation.
     async def prompt_render_filter(self, context, next: Callable[[object], Awaitable[None]]) -> None:
-        prompt = getattr(context, "rendered_prompt", None) or getattr(context, "prompt", None) or textify(context)
-        decision = await self.sdk.scan_prompt_async(
-            textify(prompt),
-            enforce=False,
-            framework=self.framework,
-            **self.metadata,
-        )
-        if decision.blocked:
-            setattr(context, "result", decision.message)
-            return
+        # The prompt exists only after rendering: render first, then scan what will be sent.
         await next(context)
-        result = getattr(context, "result", None)
-        if result is not None:
-            await self.sdk.scan_response_async(textify(result), framework=self.framework, **self.metadata)
+        prompt = getattr(context, "rendered_prompt", None) or getattr(context, "prompt", None)
+        # Images and files travel in the arguments (a ChatHistory with ImageContent/BinaryContent).
+        from ._common import extract_attachments_from_value
+        arguments = getattr(context, "arguments", None)
+        attachments = extract_attachments_from_value(dict(arguments) if arguments is not None else None)
+        if prompt or attachments:
+            from ._common import strip_inline_media
+            await self.sdk.scan_prompt_async(strip_inline_media(textify(prompt)), attachments=attachments, enforce=True,
+                                             framework=self.framework, **self.metadata)
 
     async def function_invocation_filter(self, context, next: Callable[[object], Awaitable[None]]) -> None:
         function = getattr(context, "function", None)
         name = getattr(function, "name", None) or "function"
-        args = getattr(context, "arguments", None)
-        decision = await self.sdk.scan_tool_call_async(name, input_summary=textify(args), enforce=False, framework=self.framework, **self.metadata)
-        if decision.blocked:
-            setattr(context, "result", decision.message)
-            return
+        # A prompt function is the model call itself (scanned by the render filter); only plugin
+        # functions the model chose to call are tool calls.
+        is_prompt = "Prompt" in type(function).__name__
+        if not is_prompt:
+            args = getattr(context, "arguments", None)
+            await self.sdk.scan_tool_call_async(name, input_summary=textify(dict(args or {})), enforce=True,
+                                                framework=self.framework, **self.metadata)
         await next(context)
         result = getattr(context, "result", None)
-        if result is not None:
-            await self.sdk.scan_tool_result_async(
-                name, textify(result), enforce=True, framework=self.framework, **self.metadata
-            )
+        value = getattr(result, "value", result)
+        if value is None:
+            return
+        if is_prompt:
+            await self.sdk.scan_response_async(textify(value), framework=self.framework, **self.metadata)
+        else:
+            await self.sdk.scan_tool_result_async(name, textify(value), enforce=True, framework=self.framework, **self.metadata)
