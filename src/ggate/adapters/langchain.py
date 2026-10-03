@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Iterable, List
 
 from ..core.client import get_client
+from ..core.event import current_session_id as event_context_session
 
 try:
     from langchain_core.callbacks import BaseCallbackHandler
@@ -27,6 +28,9 @@ class GgateCallbackHandler(BaseCallbackHandler):
         self.framework = framework
         self.sdk = sdk_client or get_client()
         self.metadata = metadata or {}
+        # LangChain passes run metadata to start callbacks only, so the session a run starts in is
+        # remembered here for its end and tool callbacks (and for runs nested inside it).
+        self._run_sessions: dict = {}
 
     def on_llm_start(self, serialized, prompts, **kwargs):
         text = "\n".join(str(p) for p in prompts or [])
@@ -43,8 +47,13 @@ class GgateCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(self, response, **kwargs):
         text = _llm_result_to_text(response)
+        meta = self._meta(kwargs)
+        self._run_sessions.pop(str(kwargs.get("run_id") or ""), None)
         if text:
-            self.sdk.scan_response(text, framework=self.framework, **self._meta(kwargs))
+            self.sdk.scan_response(text, framework=self.framework, **meta)
+
+    def on_llm_error(self, error, **kwargs):
+        self._run_sessions.pop(str(kwargs.get("run_id") or ""), None)
 
     def on_tool_start(self, serialized, input_str, **kwargs):
         tool = _name(serialized) or kwargs.get("name") or "tool"
@@ -52,16 +61,35 @@ class GgateCallbackHandler(BaseCallbackHandler):
 
     def on_tool_end(self, output, **kwargs):
         tool = kwargs.get("name") or "tool"
-        self.sdk.scan_tool_result(
-            tool, str(output), enforce=True, framework=self.framework, **self._meta(kwargs)
-        )
+        meta = self._meta(kwargs)
+        self._run_sessions.pop(str(kwargs.get("run_id") or ""), None)
+        self.sdk.scan_tool_result(tool, str(output), enforce=True, framework=self.framework, **meta)
+
+    def on_tool_error(self, error, **kwargs):
+        self._run_sessions.pop(str(kwargs.get("run_id") or ""), None)
 
     def _meta(self, kwargs):
         metadata = dict(self.metadata)
+        run_metadata = kwargs.get("metadata") or {}
+        # The app's conversation id wins: LangChain run metadata (`session_id`, or LangGraph's
+        # `thread_id`), then a session bound with ggate.monitor(session_id=...), then the handler's
+        # own metadata. Only without one does each run become its own session.
+        run_id, parent_id = str(kwargs.get("run_id") or ""), str(kwargs.get("parent_run_id") or "")
+        session_id = (
+            run_metadata.get("session_id")
+            or run_metadata.get("thread_id")
+            or self._run_sessions.get(run_id)
+            or self._run_sessions.get(parent_id)
+            or event_context_session()
+            or metadata.get("session_id")
+            or parent_id
+            or run_id
+        )
+        if run_id and session_id and len(self._run_sessions) < 10000:
+            self._run_sessions[run_id] = str(session_id)
         metadata.update(
             {
-                "session_id": str(kwargs.get("parent_run_id") or kwargs.get("run_id") or "")
-                or metadata.get("session_id"),
+                "session_id": str(session_id) if session_id else None,
                 "request_id": str(kwargs.get("run_id") or "") or metadata.get("request_id"),
                 "source_detail": {"langchain": _json_safe(kwargs.get("metadata"))}
                 if kwargs.get("metadata")

@@ -141,6 +141,11 @@ def _clean_dict(data: Mapping[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if v is not None and v != {} and v != []}
 
 
+def current_session_id() -> Optional[str]:
+    """The session bound by an enclosing event_context()/monitor(), if any."""
+    return _context.get().get("session_id")
+
+
 @contextmanager
 def event_context(**metadata) -> Iterator[None]:
     """Bind metadata (framework, session_id, model, ...) to every event in this scope."""
