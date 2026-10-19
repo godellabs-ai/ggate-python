@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ggate"
-version = "0.3.0"
-description = "Godel's Gate SDK for monitoring Python AI agent frameworks"
+version = "0.2.0"
+description = "Gödel Gate SDK for monitoring Python AI agent frameworks"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }

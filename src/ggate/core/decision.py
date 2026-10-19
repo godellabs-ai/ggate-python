@@ -17,6 +17,7 @@ class TopicClassification:
     confidence: float
     runner_up: Optional[str] = None
     runner_up_confidence: Optional[float] = None
+    resolution: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -39,11 +40,12 @@ class SensitivityClassification:
 
 @dataclass(frozen=True)
 class DocumentIntelligence:
-    """Non-enforcement topic and sensitivity output returned beside a scan decision."""
+    """Document classification context returned beside a scan decision."""
 
     taxonomy: DocumentTaxonomy
     sensitivity: SensitivityClassification
     matched_text: Optional[str] = None
+    file_classification: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_json(cls, value: Dict[str, Any]) -> "DocumentIntelligence":
@@ -61,6 +63,7 @@ class DocumentIntelligence:
                         if topic.get("runner_up_confidence") is not None
                         else None
                     ),
+                    resolution=topic.get("resolution"),
                 ),
                 overall_confidence=float(taxonomy.get("overall_confidence") or 0.0),
                 content_types=list(taxonomy.get("content_types") or []),
@@ -77,6 +80,7 @@ class DocumentIntelligence:
                 required_handling=list(sensitivity.get("required_handling") or []),
             ),
             matched_text=value.get("matched_text"),
+            file_classification=value.get("file_classification"),
         )
 
     def to_json(self) -> Dict[str, Any]:
@@ -88,6 +92,8 @@ class DocumentIntelligence:
             topic["runner_up"] = self.taxonomy.topic.runner_up
         if self.taxonomy.topic.runner_up_confidence is not None:
             topic["runner_up_confidence"] = self.taxonomy.topic.runner_up_confidence
+        if self.taxonomy.topic.resolution is not None:
+            topic["resolution"] = self.taxonomy.topic.resolution
         value: Dict[str, Any] = {
             "taxonomy": {
                 "topic": topic,
@@ -106,6 +112,8 @@ class DocumentIntelligence:
         }
         if self.matched_text is not None:
             value["matched_text"] = self.matched_text
+        if self.file_classification is not None:
+            value["file_classification"] = self.file_classification
         return value
 
 
@@ -119,6 +127,8 @@ class Decision:
     detection: Optional[Dict[str, Any]] = None
     document_intelligence: Optional[DocumentIntelligence] = None
     fail_open: bool = False
+    # Preserve the Console's issue lists and media evidence separately from enforcement.
+    pipeline_status: Optional[Dict[str, Any]] = None
 
     @property
     def blocked(self) -> bool:
@@ -180,6 +190,7 @@ class Decision:
                 else None
             ),
             fail_open=bool(value.get("fail_open", False)),
+            pipeline_status=value.get("pipeline_status"),
         )
 
     def to_json(self) -> Dict[str, Any]:
@@ -195,4 +206,6 @@ class Decision:
             data["detection"] = self.detection
         if self.document_intelligence is not None:
             data["document_intelligence"] = self.document_intelligence.to_json()
+        if self.pipeline_status is not None:
+            data["pipeline_status"] = self.pipeline_status
         return data

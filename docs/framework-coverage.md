@@ -2,8 +2,8 @@
 
 The SDK is a collector: it captures framework activity and sends it to the Console's scan API
 (`GGATE_CONSOLE_URL` + `GGATE_API_KEY`), which is its only destination. Sync mode waits for that
-verdict before the framework call proceeds; async mode queues events and never blocks the
-conversation.
+verdict before the framework call proceeds; async mode queues preflight events. Explicit response/tool-result waits and tool-result enforcement
+still wait for the Console in either mode.
 
 ## Coverage Matrix
 
@@ -14,7 +14,7 @@ conversation.
 | CrewAI | Yes | N/A | CrewAI event listener | Prompt/tool preflight where start events fire |
 | AutoGen / AG2 | Yes | Yes | Public `run` / stream method wrapper | Run-boundary preflight |
 | OpenAI Chat/Responses | Yes | Yes | OpenAI client wrapper | Prompt preflight, response audit |
-| OpenAI Assistants | Yes | Yes | Files, thread messages, thread runs, tool outputs | Message/run/file preflight; response audit; tool-output enforcement |
+| OpenAI Assistants (retired API) | Legacy adapter | Legacy adapter | Files, thread messages, thread runs, tool outputs | Message/run/file preflight; response audit; tool-output enforcement |
 | OpenAI Swarm | Yes | Yes | Swarm `run(...)` wrapper plus Chat Completions underneath | Run-boundary preflight |
 | LlamaIndex | Yes | Yes | Callback handler | Event-start preflight, event-end audit |
 | Haystack | Yes | N/A | Pipeline/Agent `run` wrapper | Run-boundary preflight |
@@ -28,9 +28,9 @@ conversation.
 - LangGraph uses the LangChain callback model for graph execution instrumentation.
 - CrewAI exposes event listeners for monitoring integrations.
 - AutoGen AgentChat exposes `run` and `run_stream` methods on agents.
-- OpenAI Assistants has thread messages, runs, tools, and files, but is deprecated and scheduled for
-  shutdown on August 26, 2026. Keep coverage for existing customers, but prefer Responses/Agents for
-  new development.
+- OpenAI shut down the Assistants API on August 26, 2026. The SDK retains its legacy wrapper,
+  but that does not make the upstream API available. Use the [Responses migration guide](https://developers.openai.com/api/docs/assistants/migration)
+  for new and migrated integrations.
 - OpenAI Swarm is stateless and powered by Chat Completions, so the OpenAI chat wrapper covers most
   calls. A direct `run(...)` wrapper is also provided.
 - LlamaIndex exposes callback managers/handlers for event start/end.
@@ -41,7 +41,7 @@ conversation.
 - DSPy documents observability and custom callback/logging patterns; the SDK uses module/callable
   wrappers for deterministic coverage.
 - Phidata provides built-in monitoring, but that sends to Phidata. The SDK wraps agent run methods
-  so events still flow through Godel's Gate.
+  so events still flow through Gödel Gate.
 
 ## Important Limitations
 

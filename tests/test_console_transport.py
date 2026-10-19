@@ -46,7 +46,7 @@ class ConsoleTransportTests(unittest.TestCase):
         ) as create_context:
             transport = ConsoleTransport(
                 Config.from_values(
-                    console_url="https://godels-gate.example.com",
+                    console_url="https://godel-gate.example.com",
                     api_key="godel_test",
                     console_ca_cert="/opt/ggate/console-ca.pem",
                 )
@@ -57,7 +57,7 @@ class ConsoleTransportTests(unittest.TestCase):
     def test_uses_canonical_detection_engine_auth_and_refresh(self):
         transport = _RecordingTransport(
             Config.from_values(
-                console_url="https://godels-gate.example.com", api_key="godel_test"
+                console_url="https://godel-gate.example.com", api_key="godel_test"
             )
         )
         request = {"op": "scan_text", "event": {}, "redaction": {}}
@@ -66,12 +66,12 @@ class ConsoleTransportTests(unittest.TestCase):
         transport.request(request)
 
         self.assertEqual(
-            transport.urls.count("https://godels-gate.example.com/api/v1/detection-engine/token"),
+            transport.urls.count("https://godel-gate.example.com/api/v1/detection-engine/token"),
             1,
         )
         self.assertEqual(
             transport.urls.count(
-                "https://godels-gate.example.com/api/v1/detection-engine/token/refresh"
+                "https://godel-gate.example.com/api/v1/detection-engine/token/refresh"
             ),
             1,
         )

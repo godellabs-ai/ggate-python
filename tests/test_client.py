@@ -159,7 +159,7 @@ class ClientTests(unittest.TestCase):
 
         client = Client(
             Config.from_values(
-                mode="sync", console_url="https://godels-gate.example.com", api_key="godel_x"
+                mode="sync", console_url="https://godel-gate.example.com", api_key="godel_x"
             )
         )
 

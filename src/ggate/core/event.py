@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 from .config import Config
 from .redactor import RedactionSummary, redact_text, sha256_hex
 
-SDK_VERSION = "0.3.0"
+SDK_VERSION = "0.2.0"
 
 # Normalized to the Rust `std::env::consts` vocabulary the rest of the fleet reports
 # (platform_os is a Console dimension, so casing must match the hook collectors).

@@ -1,6 +1,6 @@
-# Godel's Gate Python SDK
+# Gödel Gate Python SDK
 
-`ggate` turns an AI agent application into a Godel's Gate collector: a few lines of code capture
+`ggate` turns an AI agent application into a Gödel Gate collector: a few lines of code capture
 framework activity (prompts, responses, tool calls, tool results, file access) as `gate/v1`
 runtime events, send them for detection + policy evaluation, and — in sync mode — enforce the
 returned verdict.
@@ -11,6 +11,11 @@ travels in `collector.labels.framework` and `source.client`, which the Console r
 `agent-framework:<framework>` connectors.
 
 The Node.js SDK is [godellabs-ai/ggate-node](https://github.com/godellabs-ai/ggate-node).
+
+## Release compatibility
+
+This SDK release is **0.2.0**, aligned with Gödel Gate Console **0.2.0**.
+Use SDK **0.2.y** with Console **0.2.x**; SDK patch releases may advance independently.
 
 ## Install
 
@@ -83,7 +88,7 @@ classifier, DLP, threat intel, document intelligence, and policy — records the
 returns the verdict plus any topic/sensitivity classification:
 
 ```bash
-GGATE_CONSOLE_URL=https://godels-gate.example.com
+GGATE_CONSOLE_URL=https://godel-gate.example.com
 GGATE_API_KEY=godel_...
 ```
 
@@ -110,7 +115,7 @@ fired (`{"source": "sensitive_data", "detail": "aws_access_key_id", ...}`). `dec
 `decision.allowed` are the convenience accessors; passing `enforce=True` raises
 `GgateBlockedError` on a block instead.
 
-When rclassifier produces topic/sensitivity output, a waited scan also returns
+When the Console produces document intelligence, a waited scan also returns
 `decision.document_intelligence` in the same normalized shape stored in event JSON:
 
 ```python
@@ -128,17 +133,32 @@ Async applications have `await`-able twins of every scan call (`scan_prompt_asyn
 `scan_response_async`, `scan_tool_call_async`, `scan_tool_result_async`, `scan_file_async`,
 `scan_shell_async`, and `scan_web_async`).
 
+### Scan coverage and file classification
+
+A successful HTTP response may include `decision.pipeline_status` with `errors`, `warnings`,
+`media`, and `visual_codes`. These describe coverage and evidence, independently of the verdict:
+a `pass` with `attachment_scan_incomplete` is not confirmation that every attachment was scanned.
+Missing pipeline status on a queued/local pass does not establish coverage either.
+
+Document intelligence can also include `file_classification` (provider-qualified labels,
+`status`, and `gate_sensitivity_available`) and `taxonomy.topic.resolution` (topic uncertainty
+and resolution provenance). An `unavailable` file-classification status is not a clean result.
+
+`pipeline_status`, `file_classification`, and topic `resolution` are dictionaries; the existing
+taxonomy and sensitivity fields remain dataclasses.
+
 ## Latency and failure semantics
 
-The SDK never breaks the host application:
+Transport failures fail open; missing agent identity and explicit block enforcement can still raise errors:
 
-- **Sync mode** blocks prompt, tool-call, file, shell, and web scans until the verdict, bounded by the scan budget
-  (`GGATE_TIMEOUT_MS`, else 4s — a ceiling, not a per-call cost; raise it for prompts carrying
-  attachments, where the Console also extracts and OCRs the file). Responses and tool results are
+- **Sync mode** blocks prompt, tool-call, file, shell, and web scans until the verdict. `GGATE_TIMEOUT_MS` (default 4000) applies to each HTTP request
+  (Python uses a socket-operation timeout), not a whole-scan deadline. Token exchange, refresh,
+  and retries can add to the total time. Raise it for attachments that need extraction or OCR. Responses and tool results are
   queued by default; pass `wait=True` to receive classification, or `enforce=True` for a
   block-capable tool-result boundary.
-- **Async mode** (`ggate.init(mode="async")`) queues everything and always returns an immediate
-  pass — observability without gating.
+- **Async mode** (`ggate.init(mode="async")`) queues preflight scans and returns an immediate local
+  pass. Explicit `wait` on response/tool-result scans and `enforce` on tool-result scans still wait
+  for the Console in either mode.
 - **Fail open**: any problem reaching the Console (unreachable, restarting, slow, rejected key,
   unconfigured) yields an allow decision with `fail_open=True`. After a failure the SDK fails
   open instantly for a cooldown (`GGATE_COOLDOWN_SECS`, default 30) instead of re-calling a
@@ -162,10 +182,10 @@ that machine's other collectors. Environment variables:
 | `GGATE_AGENT_NAME` | agent name — **required** (or `agent_name`) | unset |
 | `GGATE_TEAM` | owning team — **required** (or `team`) | unset |
 | `GGATE_MODE` | `sync` (enforce) or `async` (observe) | `sync` |
-| `GGATE_CONSOLE_URL` | Console base URL, e.g. `https://godels-gate.example.com` — **required** | unset |
+| `GGATE_CONSOLE_URL` | Console base URL, e.g. `https://godel-gate.example.com` — **required** | unset |
 | `GGATE_API_KEY` | Console IAM API key (`godel_...`) — **required** | unset |
 | `GGATE_CONSOLE_CA_CERT` | PEM CA used to verify a private-CA Console | system trust |
-| `GGATE_TIMEOUT_MS` | sync scan budget | 4000 |
+| `GGATE_TIMEOUT_MS` | per-request timeout (Python: socket-operation timeout) | 4000 |
 | `GGATE_DISABLED` | `1` disables the SDK entirely | off |
 | `GGATE_HOME` | where the device config is looked for | `~/.ggate` |
 | `GGATE_CONFIG` | device config.yaml path (identity defaults only) | `$GGATE_HOME/config.yaml` |

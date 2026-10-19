@@ -1,4 +1,4 @@
-"""Public API for the Godel's Gate Python SDK."""
+"""Public API for the Gödel Gate Python SDK."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .core.decision import (
 from .core.event import Attachment
 from .exceptions import GgateBlockedError, GgateError, GgateTransportError
 
-__version__ = "0.3.0"
+__version__ = "0.2.0"
 
 
 def instrument(framework: str, **kwargs):

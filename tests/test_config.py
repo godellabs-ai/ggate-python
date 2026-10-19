@@ -46,11 +46,11 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(Config.from_values().configured)
             self.assertTrue(
                 Config.from_values(
-                    console_url="https://godels-gate.example.com", api_key="godel_x"
+                    console_url="https://godel-gate.example.com", api_key="godel_x"
                 ).configured
             )
             # A URL without a key (or the reverse) is not a usable Console.
-            self.assertFalse(Config.from_values(console_url="https://godels-gate.example.com").configured)
+            self.assertFalse(Config.from_values(console_url="https://godel-gate.example.com").configured)
 
     def test_agent_identity_is_required_and_explicit_beats_environment(self):
         # Unlike a missing Console (which fails open), an unnamed agent is refused at construction:

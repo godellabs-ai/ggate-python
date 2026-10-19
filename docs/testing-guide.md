@@ -26,13 +26,13 @@ Prerequisites:
 python3 -m venv /tmp/ggate-sdk-venv
 /tmp/ggate-sdk-venv/bin/pip install -e .
 GGATE_MODE=sync \
-GGATE_CONSOLE_URL=https://godels-gate.example.com \
+GGATE_CONSOLE_URL=https://godel-gate.example.com \
 GGATE_API_KEY=godel_... \
   /tmp/ggate-sdk-venv/bin/python - <<'PY'
 import ggate
 
 ggate.init(agent_name="Smoke Test", team="Platform Engineering", mode="sync")
-decision = ggate.scan_prompt("Godel's Gate SDK smoke test", framework="manual", model="test")
+decision = ggate.scan_prompt("Gödel Gate SDK smoke test", framework="manual", model="test")
 print(decision.to_json())
 PY
 ```
@@ -86,7 +86,7 @@ Every framework above has a Python adapter; the Node SDK covers a subset (see it
 ## 5. Edge Cases To Verify Before Release
 
 - Console unreachable or unconfigured: SDK returns fail-open pass and the app still works.
-- Console slow: sync timeout is bounded by `GGATE_TIMEOUT_MS`; async mode does not block.
+- Console slow: `GGATE_TIMEOUT_MS` applies per HTTP request (per socket operation in Python); token work and retries can extend a whole scan. Queued calls do not wait; explicit response/tool-result waits still do.
 - Expired access token: the SDK refreshes its pair; rejected refresh/API key fails open rather than throwing.
 - Queue overflow: async queue drops oldest events and does not grow unbounded.
 - Blocked prompt: provider call is not made.
@@ -117,3 +117,11 @@ With the Console stack running:
 - Stub-Console HTTP integration test.
 - Real-Console e2e test against a running deployment.
 - Console e2e test that verifies events reach Activity.
+
+## Current scan-response metadata
+
+`tests/test_decision_metadata.py` checks that pipeline errors remain separate from enforcement,
+that document classification and topic resolution survive parsing/serialization, and that older
+responses without those fields still work. For a real HTTP check against the Console contract
+fixture shared with the Node SDK, follow the [local Console contract check](https://github.com/godellabs-ai/ggate-node/blob/main/docs/testing-guide.md#local-console-contract-check).
+That simulation verifies SDK transport and response handling, not live detector coverage.
