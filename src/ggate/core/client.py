@@ -112,7 +112,7 @@ class Client:
         **metadata,
     ) -> Decision:
         event, redaction = self.builder.prompt(text, attachments=attachments, **metadata)
-        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync")
+        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
@@ -126,7 +126,7 @@ class Client:
         **metadata,
     ) -> Decision:
         event, redaction = self.builder.prompt(text, attachments=attachments, **metadata)
-        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync")
+        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
@@ -137,10 +137,16 @@ class Client:
         *,
         attachments: Optional[Iterable[Attachment | Mapping[str, Any]]] = None,
         wait: bool = False,
+        enforce: bool = False,
         **metadata,
     ) -> Decision:
+        if enforce:
+            metadata["before_delivery"] = True
         event, redaction = self.builder.response(text, attachments=attachments, **metadata)
-        return self._send_or_queue(event, redaction.to_json(), wait=wait)
+        decision = self._send_or_queue(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
 
     async def scan_response_async(
         self,
@@ -148,35 +154,45 @@ class Client:
         *,
         attachments: Optional[Iterable[Attachment | Mapping[str, Any]]] = None,
         wait: bool = False,
+        enforce: bool = False,
         **metadata,
     ) -> Decision:
+        if enforce:
+            metadata["before_delivery"] = True
         event, redaction = self.builder.response(text, attachments=attachments, **metadata)
-        return await self._send_or_queue_async(event, redaction.to_json(), wait=wait)
+        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
 
     def scan_tool_call(self, tool: str, *, input_summary=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.tool_call(tool, input_summary=input_summary, **metadata)
-        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync")
+        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
 
     async def scan_tool_call_async(self, tool: str, *, input_summary=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.tool_call(tool, input_summary=input_summary, **metadata)
-        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync")
+        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
 
     def scan_tool_result(self, tool: str, output: str, *, wait: bool = False, enforce: bool = False, **metadata) -> Decision:
+        if enforce:
+            metadata["before_delivery"] = True
         event, redaction = self.builder.tool_result(tool, output, **metadata)
-        decision = self._send_or_queue(event, redaction.to_json(), wait=wait or enforce)
+        decision = self._send_or_queue(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
 
     async def scan_tool_result_async(self, tool: str, output: str, *, wait: bool = False, enforce: bool = False, **metadata) -> Decision:
+        if enforce:
+            metadata["before_delivery"] = True
         event, redaction = self.builder.tool_result(tool, output, **metadata)
-        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=wait or enforce)
+        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
@@ -202,7 +218,7 @@ class Client:
             path, action=action, content_len=content_len, content=content, **metadata
         )
         decision = self._send_or_queue(
-            event, redaction.to_json(), wait=self.config.mode == "sync"
+            event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
@@ -229,7 +245,7 @@ class Client:
             path, action=action, content_len=content_len, content=content, **metadata
         )
         decision = await self._send_or_queue_async(
-            event, redaction.to_json(), wait=self.config.mode == "sync"
+            event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
@@ -237,7 +253,7 @@ class Client:
 
     def scan_shell(self, command: str, *, argv=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.shell(command, argv=argv, **metadata)
-        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync")
+        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
@@ -247,7 +263,7 @@ class Client:
     ) -> Decision:
         event, redaction = self.builder.shell(command, argv=argv, **metadata)
         decision = await self._send_or_queue_async(
-            event, redaction.to_json(), wait=self.config.mode == "sync"
+            event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
@@ -257,7 +273,7 @@ class Client:
         self, url: str, *, method=None, domain=None, enforce: bool = False, **metadata
     ) -> Decision:
         event, redaction = self.builder.web(url, method=method, domain=domain, **metadata)
-        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync")
+        decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)
         return decision
@@ -267,7 +283,7 @@ class Client:
     ) -> Decision:
         event, redaction = self.builder.web(url, method=method, domain=domain, **metadata)
         decision = await self._send_or_queue_async(
-            event, redaction.to_json(), wait=self.config.mode == "sync"
+            event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
         if enforce and decision.blocked:
             raise GgateBlockedError(decision)

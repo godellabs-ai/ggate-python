@@ -14,8 +14,41 @@ The Node.js SDK is [godellabs-ai/ggate-node](https://github.com/godellabs-ai/gga
 
 ## Release compatibility
 
-This SDK release is **0.2.0**, aligned with Gödel Gate Console **0.2.0**.
+This SDK release is **0.2.1**, aligned with Gödel Gate Console **0.2.1**.
 Use SDK **0.2.y** with Console **0.2.x**; SDK patch releases may advance independently.
+
+### Microsoft 365 Agents SDK
+
+```python
+import ggate
+
+gate = ggate.init(agent_name="Microsoft 365 Assistant", team="Platform Engineering", mode="sync")
+# adapter is your existing Microsoft Agents CloudAdapter.
+ggate.instrument("microsoft-365-agents", adapter=adapter, sdk_client=gate)
+```
+
+Install the optional `ggate[microsoft-365-agents]` extra if your app does not already have the
+Microsoft package. The adapter uses public middleware hooks to scan incoming content and
+outgoing sends/updates, including inline cards and invoke values. It raises `GgateBlockedError`
+on a block before calling the next handler or delivering the activity. Catch that exception at
+your application's error boundary without echoing blocked content.
+
+See the runnable [Microsoft 365 example](examples/microsoft-365-agent/README.md). Internal model
+and tool operations need their own adapter or explicit scans; Microsoft-managed internals and
+remote attachment bytes are not automatically visible. Python conversation context propagates
+to nested explicit scans and is isolated between concurrent turns.
+
+### Changes in 0.2.1
+
+- `enforce=True` always waits, even if the default mode is `async`.
+- `scan_response(..., enforce=True)` and `scan_tool_result(..., enforce=True)` mark content as
+  awaiting delivery and can raise on a block. Do not call them after delivering that content.
+- `before_delivery=True` also waits and emits `phase="pre"`, but returns the verdict for the
+  caller to handle. `wait=True` alone remains an audit scan with `phase="post"`.
+- Decisions retain Gate's `media_gate`, document intelligence, and pipeline status. Explicit
+  repository provenance can be supplied with `source_trust`.
+- The core now requires Python 3.10+. Some optional frameworks require Python 3.11+.
+  The OpenAI dependency allows both 2.x and 3.x so framework-specific requirements can resolve.
 
 ## Install
 
@@ -25,7 +58,7 @@ python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.
 
 The core package has no dependencies. Framework adapters import the framework you already use;
 extras are available if you want pip to pull one in (`ggate[openai]`, `ggate[langchain]`,
-`ggate[all]`, …). Python 3.9+.
+`ggate[all]`, …). Python 3.10+.
 
 ## Quickstart
 
@@ -157,7 +190,7 @@ Transport failures fail open; missing agent identity and explicit block enforcem
   queued by default; pass `wait=True` to receive classification, or `enforce=True` for a
   block-capable tool-result boundary.
 - **Async mode** (`ggate.init(mode="async")`) queues preflight scans and returns an immediate local
-  pass. Explicit `wait` on response/tool-result scans and `enforce` on tool-result scans still wait
+  pass. Explicit `wait` on response/tool-result scans and all `enforce` calls still wait
   for the Console in either mode.
 - **Fail open**: any problem reaching the Console (unreachable, restarting, slow, rejected key,
   unconfigured) yields an allow decision with `fail_open=True`. After a failure the SDK fails

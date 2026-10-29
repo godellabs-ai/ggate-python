@@ -129,6 +129,7 @@ class Decision:
     fail_open: bool = False
     # Preserve the Console's issue lists and media evidence separately from enforcement.
     pipeline_status: Optional[Dict[str, Any]] = None
+    media_gate: Optional[Dict[str, Any]] = None
 
     @property
     def blocked(self) -> bool:
@@ -191,6 +192,7 @@ class Decision:
             ),
             fail_open=bool(value.get("fail_open", False)),
             pipeline_status=value.get("pipeline_status"),
+            media_gate=value.get("media_gate"),
         )
 
     def to_json(self) -> Dict[str, Any]:
@@ -208,4 +210,6 @@ class Decision:
             data["document_intelligence"] = self.document_intelligence.to_json()
         if self.pipeline_status is not None:
             data["pipeline_status"] = self.pipeline_status
+        if self.media_gate is not None:
+            data["media_gate"] = self.media_gate
         return data

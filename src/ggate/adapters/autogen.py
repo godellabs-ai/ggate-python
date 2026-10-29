@@ -33,7 +33,7 @@ def wrap_agent(agent, *, sdk_client=None, framework: str = "autogen", **metadata
         from ._common import extract_attachments_from_value
         attachments = extract_attachments_from_value(kwargs)
         attachments.extend(extract_attachments_from_value(args))
-        sdk.scan_prompt(textify(prompt), attachments=attachments, enforce=True, framework=fw, **metadata)
+        sdk.scan_prompt(textify(prompt), attachments=attachments, enforce=sdk.config.mode == "sync", framework=fw, **metadata)
 
     def after(result, fw):
         text = _task_result_to_text(result)

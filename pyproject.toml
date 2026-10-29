@@ -1,42 +1,44 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.33.0,<2"]
 build-backend = "hatchling.build"
 
 [project]
 name = "ggate"
-version = "0.2.0"
+version = "0.2.1"
 description = "Gödel Gate SDK for monitoring Python AI agent frameworks"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Godel Labs" }]
 keywords = ["ai", "agents", "security", "llm", "monitoring"]
 dependencies = []
 
 [project.optional-dependencies]
-openai = ["openai>=3.7.0"]
-langchain = ["langchain-core>=1.6.1"]
-crewai = ["crewai>=1.15.18"]
-autogen = ["autogen-agentchat>=0.4"]
-llamaindex = ["llama-index-core>=0.10"]
-haystack = ["haystack-ai>=2"]
-semantic-kernel = ["semantic-kernel>=1"]
-dspy = ["dspy>=2"]
-phidata = ["phidata>=2"]
-agno = ["agno>=1"]
+openai = ["openai>=2.30.0,<4"]
+langchain = ["langchain-core>=1.7.1,<2"]
+crewai = ["crewai>=1.15.33,<2"]
+autogen = ["autogen-agentchat>=0.7.5,<0.8"]
+llamaindex = ["llama-index-core>=0.14.25,<0.15"]
+haystack = ["haystack-ai>=3.4.1,<4"]
+semantic-kernel = ["semantic-kernel>=1.46.0,<2"]
+dspy = ["dspy>=3.4.1,<4"]
+phidata = ["phidata>=2.7.10,<3"]
+agno = ["agno>=3.1.11,<4"]
+microsoft-365-agents = ["microsoft-agents-hosting-core>=1.9.0,<2"]
 all = [
-  "openai>=3.7.0",
-  "langchain-core>=1.6.2",
-  "crewai>=1.15.18",
-  "autogen-agentchat>=0.4",
-  "llama-index-core>=0.10",
-  "haystack-ai>=3.1.0",
-  "semantic-kernel>=1",
-  "dspy>=3.3.1",
-  "phidata>=2",
-  "agno>=3.0.5",
+  "microsoft-agents-hosting-core>=1.9.0,<2",
+  "openai>=2.30.0,<4",
+  "langchain-core>=1.7.1,<2",
+  "crewai>=1.15.33,<2",
+  "autogen-agentchat>=0.7.5,<0.8",
+  "llama-index-core>=0.14.25,<0.15",
+  "haystack-ai>=3.4.1,<4",
+  "semantic-kernel>=1.46.0,<2",
+  "dspy>=3.4.1,<4",
+  "phidata>=2.7.10,<3",
+  "agno>=3.1.11,<4",
 ]
-dev = ["pytest>=8"]
+dev = ["pytest>=9.2.0,<10", "microsoft-agents-hosting-core>=1.9.0,<2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ggate"]

@@ -66,7 +66,7 @@ class GgateCrewAIListener(BaseEventListener):
         if phase == "start":
             from ._common import extract_attachments_from_value
             attachments = extract_attachments_from_value(event)
-            self.sdk.scan_prompt(text, attachments=attachments, enforce=True, **metadata)
+            self.sdk.scan_prompt(text, attachments=attachments, enforce=self.sdk.config.mode == "sync", **metadata)
         else:
             self.sdk.scan_response(text, **metadata)
 
@@ -74,9 +74,9 @@ class GgateCrewAIListener(BaseEventListener):
         tool = getattr(event, "tool_name", None) or getattr(event, "name", None) or "tool"
         metadata = {"framework": self.framework, **self.metadata}
         if started:
-            self.sdk.scan_tool_call(tool, input_summary=textify(event), enforce=True, **metadata)
+            self.sdk.scan_tool_call(tool, input_summary=textify(event), enforce=self.sdk.config.mode == "sync", **metadata)
         else:
-            self.sdk.scan_tool_result(tool, textify(event), enforce=True, **metadata)
+            self.sdk.scan_tool_result(tool, textify(event), enforce=self.sdk.config.mode == "sync", **metadata)
 
 
 def instrument(*, sdk_client=None, **metadata):

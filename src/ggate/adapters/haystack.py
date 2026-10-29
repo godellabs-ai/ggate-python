@@ -28,7 +28,7 @@ def wrap_target(target, *, sdk_client=None, framework: str = "haystack", **metad
 
     def before(args, kwargs, fw):
         payload = kwargs.get("data") or kwargs.get("messages") or kwargs.get("user_prompt") or (args[0] if args else None)
-        sdk.scan_prompt(textify(payload), enforce=True, framework=fw, **metadata)
+        sdk.scan_prompt(textify(payload), enforce=sdk.config.mode == "sync", framework=fw, **metadata)
 
     def after(result, fw):
         text = textify(result)

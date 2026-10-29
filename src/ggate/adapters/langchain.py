@@ -28,14 +28,14 @@ class GgateCallbackHandler(BaseCallbackHandler):
         text = "\n".join(str(p) for p in prompts or [])
         from ._common import extract_attachments_from_value
         attachments = extract_attachments_from_value(kwargs)
-        self.sdk.scan_prompt(text, attachments=attachments, enforce=True, framework=self.framework, **self._meta(kwargs))
+        self.sdk.scan_prompt(text, attachments=attachments, enforce=self.sdk.config.mode == "sync", framework=self.framework, **self._meta(kwargs))
 
     def on_chat_model_start(self, serialized, messages, **kwargs):
         text = _messages_to_text(messages)
         from ._common import extract_attachments_from_value
         attachments = extract_attachments_from_value(messages)
         attachments.extend(extract_attachments_from_value(kwargs))
-        self.sdk.scan_prompt(text, attachments=attachments, enforce=True, framework=self.framework, **self._meta(kwargs))
+        self.sdk.scan_prompt(text, attachments=attachments, enforce=self.sdk.config.mode == "sync", framework=self.framework, **self._meta(kwargs))
 
     def on_llm_end(self, response, **kwargs):
         text = _llm_result_to_text(response)
@@ -44,12 +44,12 @@ class GgateCallbackHandler(BaseCallbackHandler):
 
     def on_tool_start(self, serialized, input_str, **kwargs):
         tool = _name(serialized) or kwargs.get("name") or "tool"
-        self.sdk.scan_tool_call(tool, input_summary=input_str, enforce=True, framework=self.framework, **self._meta(kwargs))
+        self.sdk.scan_tool_call(tool, input_summary=input_str, enforce=self.sdk.config.mode == "sync", framework=self.framework, **self._meta(kwargs))
 
     def on_tool_end(self, output, **kwargs):
         tool = kwargs.get("name") or "tool"
         self.sdk.scan_tool_result(
-            tool, str(output), enforce=True, framework=self.framework, **self._meta(kwargs)
+            tool, str(output), enforce=self.sdk.config.mode == "sync", framework=self.framework, **self._meta(kwargs)
         )
 
     def _meta(self, kwargs):

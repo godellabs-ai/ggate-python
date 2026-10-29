@@ -65,7 +65,7 @@ class _CompletionsWrapper:
     def create(self, *args, **kwargs):
         prompt = _messages_to_text(kwargs.get("messages") or _arg_at(args, 1) or [])
         model = kwargs.get("model") or _arg_at(args, 0)
-        self._sdk.scan_prompt(prompt, enforce=True, framework=self._framework, provider="openai", model=model)
+        self._sdk.scan_prompt(prompt, enforce=self._sdk.config.mode == "sync", framework=self._framework, provider="openai", model=model)
         result = self._target.create(*args, **kwargs)
         if inspect.isawaitable(result):
             return _await_and_scan(result, self._sdk, self._framework, model)
@@ -92,7 +92,7 @@ class _ResponsesWrapper:
     def create(self, *args, **kwargs):
         prompt = _input_to_text(kwargs.get("input") or _arg_at(args, 0))
         model = kwargs.get("model")
-        self._sdk.scan_prompt(prompt, enforce=True, framework=self._framework, provider="openai", model=model)
+        self._sdk.scan_prompt(prompt, enforce=self._sdk.config.mode == "sync", framework=self._framework, provider="openai", model=model)
         result = self._target.create(*args, **kwargs)
         if inspect.isawaitable(result):
             return _await_and_scan(result, self._sdk, self._framework, model)
@@ -122,7 +122,7 @@ class _FilesWrapper:
             self._sdk.scan_prompt(
                 f"OpenAI file upload: {attachment.filename or attachment.id or 'file'}",
                 attachments=[attachment],
-                enforce=True,
+                enforce=self._sdk.config.mode == "sync",
                 framework=self._framework,
                 provider="openai",
             )
@@ -177,7 +177,7 @@ class _ThreadMessagesWrapper:
         self._sdk.scan_prompt(
             _input_to_text(content),
             attachments=attachments,
-            enforce=True,
+            enforce=self._sdk.config.mode == "sync",
             framework=self._framework,
             provider="openai",
             conversation_id=str(kwargs.get("thread_id") or _arg_at(args, 0) or ""),
@@ -207,7 +207,7 @@ class _ThreadRunsWrapper:
         if prompt:
             self._sdk.scan_prompt(
                 prompt,
-                enforce=True,
+                enforce=self._sdk.config.mode == "sync",
                 framework=self._framework,
                 provider="openai",
                 conversation_id=str(kwargs.get("thread_id") or _arg_at(args, 0) or ""),
@@ -226,7 +226,7 @@ class _ThreadRunsWrapper:
             self._sdk.scan_tool_result(
                 str(_get(output, "tool_call_id") or "tool"),
                 _input_to_text(_get(output, "output")),
-                enforce=True,
+                enforce=self._sdk.config.mode == "sync",
                 framework=self._framework,
                 provider="openai",
             )
@@ -244,7 +244,7 @@ class _RunMethodWrapper:
         if not self._response_only:
             prompt = _input_to_text(kwargs.get("messages") or kwargs.get("input") or kwargs.get("task") or args)
             if prompt:
-                self._sdk.scan_prompt(prompt, enforce=True, framework=self._framework, provider="openai")
+                self._sdk.scan_prompt(prompt, enforce=self._sdk.config.mode == "sync", framework=self._framework, provider="openai")
         result = self._target(*args, **kwargs)
         if inspect.isawaitable(result):
             return _await_and_scan(result, self._sdk, self._framework, kwargs.get("model"))

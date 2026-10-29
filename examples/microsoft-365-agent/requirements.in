@@ -1,0 +1,5 @@
+-e ../..
+microsoft-agents-hosting-core==1.9.0
+microsoft-agents-hosting-aiohttp==1.9.0
+microsoft-agents-authentication-msal==1.9.0
+python-dotenv==1.2.4

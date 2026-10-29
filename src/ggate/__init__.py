@@ -13,7 +13,7 @@ from .core.decision import (
 from .core.event import Attachment
 from .exceptions import GgateBlockedError, GgateError, GgateTransportError
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def instrument(framework: str, **kwargs):
@@ -24,6 +24,10 @@ def instrument(framework: str, **kwargs):
     """
 
     name = framework.lower().replace("_", "-")
+    if name in {"microsoft-365-agents", "m365", "microsoft-365-agents-sdk"}:
+        from .adapters.microsoft_365_agents import instrument as instrument_m365
+
+        return instrument_m365(**kwargs)
     if name in {"openai", "openai-assistants", "openai-swarm", "swarm"}:
         from .adapters.openai import instrument as instrument_openai
 

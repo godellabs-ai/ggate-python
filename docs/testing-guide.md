@@ -111,7 +111,7 @@ With the Console stack running:
 
 ## 7. What To Automate In CI
 
-- Unit tests on Python 3.9 through current supported Python.
+- Unit tests on Python 3.10 through current supported Python.
 - Contract test of emitted `scan_text` events against the Console's event crates (the Rust crates
   are the wire-shape source of truth).
 - Stub-Console HTTP integration test.
@@ -125,3 +125,12 @@ that document classification and topic resolution survive parsing/serialization,
 responses without those fields still work. For a real HTTP check against the Console contract
 fixture shared with the Node SDK, follow the [local Console contract check](https://github.com/godellabs-ai/ggate-node/blob/main/docs/testing-guide.md#local-console-contract-check).
 That simulation verifies SDK transport and response handling, not live detector coverage.
+
+## Microsoft 365 integration tests
+
+The test suite uses the installed Microsoft Agents SDK TurnContext, exercising blocked inbound
+messages, outgoing sends, batch atomicity, and message updates. The transport is simulated, so
+these tests do not validate a live Microsoft tenant or Gate detector configuration.
+
+In 0.2.1, `enforce` always waits, including when the default mode is audit. For responses and
+tool results it also declares a pre-delivery boundary. A plain waited audit remains `post`.

@@ -60,5 +60,5 @@ class SemanticKernelMonitor:
         result = getattr(context, "result", None)
         if result is not None:
             await self.sdk.scan_tool_result_async(
-                name, textify(result), enforce=True, framework=self.framework, **self.metadata
+                name, textify(result), enforce=self.sdk.config.mode == "sync", framework=self.framework, **self.metadata
             )

@@ -34,7 +34,7 @@ class GgateLlamaIndexCallbackHandler(BaseCallbackHandler):
             self.sdk.scan_prompt(
                 text,
                 attachments=attachments,
-                enforce=True,
+                enforce=self.sdk.config.mode == "sync",
                 framework=self.framework,
                 request_id=str(event_id or ""),
                 **self.metadata,

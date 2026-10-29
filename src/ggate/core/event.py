@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 from .config import Config
 from .redactor import RedactionSummary, redact_text, sha256_hex
 
-SDK_VERSION = "0.2.0"
+SDK_VERSION = "0.2.1"
 
 # Normalized to the Rust `std::env::consts` vocabulary the rest of the fleet reports
 # (platform_os is a Console dimension, so casing must match the hook collectors).
@@ -239,7 +239,8 @@ class RuntimeEventBuilder:
             "subagent_type": subagent_type,
             "attachments": self._attachments(attachments),
         }
-        return self._event("post", payload, primary_text=text, model=model, **metadata)
+        before_delivery = metadata.pop("before_delivery", False)
+        return self._event("pre" if before_delivery else "post", payload, primary_text=text, model=model, **metadata)
 
     def file_event(
         self,
@@ -312,7 +313,8 @@ class RuntimeEventBuilder:
             "ok": ok,
             "duration_ms": duration_ms,
         }
-        return self._event("post", payload, primary_text=output, **metadata)
+        before_delivery = metadata.pop("before_delivery", False)
+        return self._event("pre" if before_delivery else "post", payload, primary_text=output, **metadata)
 
     def shell(self, command: str, *, argv: Optional[Iterable[str]] = None, **metadata):
         payload = {"surface": "shell", "command": command, "argv": list(argv or [])}
@@ -378,6 +380,7 @@ class RuntimeEventBuilder:
                     "correlation_id": merged.get("correlation_id"),
                     "parent_event_id": merged.get("parent_event_id"),
                     "repo": merged.get("repo"),
+                    "source_trust": merged.get("source_trust"),
                     "permission_mode": merged.get("permission_mode"),
                 }
             ),

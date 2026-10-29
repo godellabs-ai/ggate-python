@@ -26,7 +26,7 @@ def wrap_module(module, *, sdk_client=None, framework: str = "dspy", **metadata)
     sdk = sdk_client or get_client()
 
     def before(args, kwargs, fw):
-        sdk.scan_prompt(textify(kwargs or args), enforce=True, framework=fw, **metadata)
+        sdk.scan_prompt(textify(kwargs or args), enforce=sdk.config.mode == "sync", framework=fw, **metadata)
 
     def after(result, fw):
         text = textify(result)

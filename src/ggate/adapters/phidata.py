@@ -27,7 +27,7 @@ def wrap_agent(agent, *, sdk_client=None, framework: str = "phidata", **metadata
 
     def before(args, kwargs, fw):
         prompt = kwargs.get("message") or kwargs.get("prompt") or (args[0] if args else None)
-        sdk.scan_prompt(textify(prompt), enforce=True, framework=fw, **metadata)
+        sdk.scan_prompt(textify(prompt), enforce=sdk.config.mode == "sync", framework=fw, **metadata)
 
     def after(result, fw):
         text = textify(result)

@@ -2,13 +2,14 @@
 
 The SDK is a collector: it captures framework activity and sends it to the Console's scan API
 (`GGATE_CONSOLE_URL` + `GGATE_API_KEY`), which is its only destination. Sync mode waits for that
-verdict before the framework call proceeds; async mode queues preflight events. Explicit response/tool-result waits and tool-result enforcement
-still wait for the Console in either mode.
+verdict before the framework call proceeds; async mode queues preflight events. Explicit waits and `enforce` calls wait for the Console in either mode. Response/result delivery
+checks use `before_delivery` (or `enforce`) while content is still withheld.
 
 ## Coverage Matrix
 
 | Framework | Python | Node.js | Integration point | Enforcement |
 |---|---:|---:|---|---|
+| Microsoft 365 Agents SDK | Yes | Yes | Adapter middleware and public send/update hooks | Incoming content and outgoing delivery in sync mode; internal tools need separate scans |
 | LangChain | Yes | Yes | Callback handler | Prompt/tool preflight in sync mode |
 | LangGraph | Yes | Yes | LangChain-compatible callback handler | Prompt/tool preflight in sync mode |
 | CrewAI | Yes | N/A | CrewAI event listener | Prompt/tool preflight where start events fire |
@@ -70,3 +71,9 @@ still wait for the Console in either mode.
 - Semantic Kernel filters: https://learn.microsoft.com/en-us/semantic-kernel/concepts/enterprise-readiness/filters
 - DSPy observability: https://dspy.ai/tutorials/observability/
 - Phidata monitoring: https://docs.phidata.com/monitoring
+
+Microsoft 365 middleware never fetches attachment URLs. Inline card/invoke content is scanned;
+remote attachments remain metadata-only. Streaming chunks already delivered cannot be recalled.
+The middleware does not instrument the internals of hosted Foundry or Copilot Studio services.
+Microsoft Agent Framework and Microsoft Agent 365 are distinct products; this adapter targets
+Microsoft 365 Agents SDK only.
