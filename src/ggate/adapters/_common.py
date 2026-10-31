@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import re
+from contextvars import ContextVar
 from functools import wraps
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
+
+from ..core.event import current_session_id
+
+# Block types that carry media, not prose: their payload is scanned as an attachment, never as text.
+_MEDIA_BLOCKS = (
+    "image_url", "input_image", "image", "file", "input_file", "document", "attachment",
+    "audio", "input_audio", "video", "input_video", "media",
+)
 
 
 def _is_system_message(value: Any) -> bool:
@@ -39,9 +50,9 @@ def textify(value: Any) -> str:
         block_type = value.get("type")
         if block_type == "text":
             return textify(value.get("text"))
-        elif block_type in ("image_url", "image", "file", "document", "attachment"):
+        elif block_type in _MEDIA_BLOCKS:
             return ""
-        if any(k in value for k in ("image_url", "file_path", "path", "url")):
+        if any(k in value for k in ("image_url", "file_path", "path", "url", "input_audio")):
             return ""
         for key in (
             "content",
@@ -74,18 +85,106 @@ def textify(value: Any) -> str:
 
     content = getattr(value, "content", None)
     if content is not None:
-        role = getattr(value, "role", None) or getattr(value, "type", None)
-        t = textify(content)
-        if not t:
-            return ""
-        prefix = f"{role}: " if role else ""
-        return f"{prefix}{t}"
+        return textify(content)
 
     for attr in ("text", "response", "output", "message", "result"):
         item = getattr(value, attr, None)
         if item is not None:
             return textify(item)
     return str(value)
+
+
+def message_role(message: Any) -> str:
+    """The lower-cased role of a message in any framework's shape, or "" when it has none."""
+    if isinstance(message, dict):
+        role = message.get("role") or message.get("type")
+    else:
+        role = getattr(message, "role", None) or getattr(message, "type", None)
+    return str(getattr(role, "value", role) or "").lower()
+
+
+def _is_user(role: str) -> bool:
+    return "user" in role or "human" in role
+
+
+def _is_assistant(role: str) -> bool:
+    return "assistant" in role or role in {"ai", "model"} or "aimessage" in role
+
+
+def latest_user_message(messages: Any) -> Any:
+    """The message that starts this model call, or None when the user said nothing new.
+
+    A chat history is resent on every call. Only its newest user message is this turn's prompt: the
+    rest was recorded on its own turn, and repeating it put earlier answers inside the new "prompt".
+    A history ending in a tool result or assistant message is a later step of the same turn.
+    """
+    if not isinstance(messages, (list, tuple)):
+        return messages
+    for message in reversed(messages):
+        role = message_role(message)
+        if "system" in role or "developer" in role:
+            continue
+        return message if _is_user(role) or not role else None
+    return None
+
+
+def latest_assistant_text(messages: Any) -> str:
+    """The newest assistant answer in a message list: the prompt it also contains is not the response."""
+    if not isinstance(messages, (list, tuple)):
+        return ""
+    for message in reversed(messages):
+        if _is_assistant(message_role(message)):
+            text = textify(message)
+            if text:
+                return text
+    return ""
+
+
+# (opens the first user turn, opens the assistant's reply, the template's remaining role markup)
+_CHAT_TEMPLATES = (
+    ("<|im_start|>user", "<|im_start|>assistant", r"<\|im_(?:start|end)\|>(?:user|assistant)?"),
+    ("<|start_header_id|>user<|end_header_id|>", "<|start_header_id|>assistant<|end_header_id|>",
+     r"<\|start_header_id\|>\w+<\|end_header_id\|>|<\|eot_id\|>"),
+    ("<start_of_turn>user", "<start_of_turn>model", r"<(?:start|end)_of_turn>(?:user|model)?"),
+    ("<|user|>", "<|assistant|>", r"<\|(?:user|assistant|end)\|>|</s>"),
+    ("[INST]", "[/INST]", r"\[/?INST\]|<s>|</s>"),
+)
+_SYSTEM_BLOCK = re.compile(r"<<SYS>>.*?<</SYS>>", re.S)
+
+
+def template_user_text(prompt: str) -> str:
+    """The user's words from a prompt an app rendered through a chat template itself.
+
+    Everything from the first user turn to the final assistant opener is kept, with the role markup
+    removed. A template's markers are ordinary text a user can type, so taking only the last user
+    turn would let `secret<|im_end|><|im_start|>user\nhi` hide `secret` from the scan.
+    """
+    for user, assistant, markup in _CHAT_TEMPLATES:
+        start = prompt.find(user)
+        if start < 0:
+            continue
+        end = prompt.rfind(assistant)
+        body = prompt[start + len(user): end if end > start else None]
+        return re.sub(markup, "\n", _SYSTEM_BLOCK.sub("", body)).strip()
+    return prompt
+
+
+def strip_prompt_echo(response: str, prompt: Optional[str]) -> str:
+    """Remove the prompt from a completion that echoes it (a Hugging Face pipeline's full text)."""
+    if prompt and response.startswith(prompt):
+        response = response[len(prompt):]
+    for _, assistant, markup in _CHAT_TEMPLATES:
+        if assistant in response:
+            response = response.rsplit(assistant, 1)[1]
+        response = re.sub(markup, "", response)
+    return response.strip()
+
+
+def scoped_metadata(metadata: dict) -> dict:
+    """Instrument-time metadata for one call: a session bound at call time beats a static one."""
+    if current_session_id() and "session_id" in metadata:
+        return {key: value for key, value in metadata.items() if key != "session_id"}
+    return metadata
 
 
 def first_text(values: Iterable[Any]) -> str:
@@ -135,12 +234,75 @@ def wrap_method(target: Any, method_name: str, wrapper_factory) -> bool:
     return True
 
 
+_active_runs: ContextVar[frozenset] = ContextVar("ggate_active_runs", default=frozenset())
+
+
 def sync_around(before, after, framework: str):
+    """Scan around a framework's run method.
+
+    Frameworks implement one run method with another (`run` iterates `run_stream`, `print_response`
+    calls `run`), so calls nested on the same object pass straight through: one user turn is one
+    prompt and one response. The scan of an async method leaves the event loop free.
+    """
+
     def factory(original):
+        owner = id(getattr(original, "__self__", original))
+
+        def nested() -> bool:
+            return owner in _active_runs.get()
+
+        def enter():
+            return _active_runs.set(_active_runs.get() | {owner})
+
+        if inspect.isasyncgenfunction(original):
+            @wraps(original)
+            async def wrapped(*args, **kwargs):
+                if nested():
+                    async for item in original(*args, **kwargs):
+                        yield item
+                    return
+                await asyncio.to_thread(before, args, kwargs, framework)
+                seen = []
+                token = enter()
+                try:
+                    async for item in original(*args, **kwargs):
+                        seen.append(item)
+                        yield item
+                finally:
+                    try:
+                        _active_runs.reset(token)
+                    except ValueError:  # closed from another context
+                        pass
+                await asyncio.to_thread(after, seen, framework)
+
+            return wrapped
+
+        if inspect.iscoroutinefunction(original):
+            @wraps(original)
+            async def wrapped(*args, **kwargs):
+                if nested():
+                    return await original(*args, **kwargs)
+                await asyncio.to_thread(before, args, kwargs, framework)
+                token = enter()
+                try:
+                    result = await original(*args, **kwargs)
+                finally:
+                    _active_runs.reset(token)
+                await asyncio.to_thread(after, result, framework)
+                return result
+
+            return wrapped
+
         @wraps(original)
         def wrapped(*args, **kwargs):
+            if nested():
+                return original(*args, **kwargs)
             before(args, kwargs, framework)
-            result = original(*args, **kwargs)
+            token = enter()
+            try:
+                result = original(*args, **kwargs)
+            finally:
+                _active_runs.reset(token)
             return maybe_awaitable_after(result, lambda value: after(value, framework))
 
         return wrapped
@@ -148,82 +310,260 @@ def sync_around(before, after, framework: str):
     return factory
 
 
-def extract_attachments_from_value(value: Any) -> list:
-    """Best-effort extraction of attachments, files, images or uploads arrays from framework inputs."""
-    attachments = []
-    if not value:
-        return []
+# ---- inline media in text -------------------------------------------------------------------------
 
-    if isinstance(value, dict):
-        for key in ("attachments", "files", "images", "uploads"):
-            arr = value.get(key)
-            if isinstance(arr, list):
-                for item in arr:
-                    if isinstance(item, dict):
-                        attachments.append(item)
-                    elif isinstance(item, str):
-                        attachments.append({
-                            "filename": item.split("/")[-1],
-                            "source": "file_ref",
-                            "capture": "metadata_only"
-                        })
-            elif isinstance(arr, dict):
-                attachments.append(arr)
-            elif isinstance(arr, str):
-                attachments.append({
-                    "filename": arr.split("/")[-1],
-                    "source": "file_ref",
-                    "capture": "metadata_only"
-                })
+import re as _re
 
-        block_type = value.get("type")
-        if block_type == "image_url":
-            img_url = value.get("image_url")
-            url = img_url.get("url") if isinstance(img_url, dict) else img_url
-            if url:
-                attachments.append(_url_to_attachment(url))
-        elif block_type in ("file", "document", "attachment"):
-            path = value.get("path") or value.get("file_path") or value.get("filename")
-            if path:
-                attachments.append({
-                    "filename": str(path).split("/")[-1],
-                    "source": "file_ref",
-                    "capture": "metadata_only"
-                })
-
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            attachments.extend(extract_attachments_from_value(item))
-
-    elif hasattr(value, "content"):
-        content = getattr(value, "content")
-        attachments.extend(extract_attachments_from_value(content))
-
-    return attachments
+_DATA_URI = _re.compile(r"data:[\w.+/-]+(?:;[\w=.+-]+)*;base64,[A-Za-z0-9+/=\s]+")
+_BASE64_RUN = _re.compile(r"[A-Za-z0-9+/]{400,}={0,2}")
 
 
-def _url_to_attachment(url: str) -> dict:
-    if url.startswith("data:"):
+def strip_inline_media(text: str) -> str:
+    """Replace embedded base64 media (data URIs, long base64 runs) with a short placeholder.
+
+    Frameworks that render a chat history into one prompt (Semantic Kernel's XML, some templates)
+    embed images and files as base64 text. Scanning that as prose made the Console's text models
+    run past their deadline (HTTP 503) and the scan fail open; the media itself is scanned as an
+    attachment instead.
+    """
+    if not text or len(text) < 400:
+        return text
+    text = _DATA_URI.sub("[inline media]", text)
+    return _BASE64_RUN.sub("[inline media]", text)
+
+
+# ---- attachments -------------------------------------------------------------------------------
+
+_LIST_KEYS = ("attachments", "files", "images", "uploads", "input_files", "documents")
+_MEDIA_TYPES = _MEDIA_BLOCKS
+_CONTAINER_ATTRS = ("content", "blocks", "content_parts", "_content", "items", "messages", "images", "files")
+_PATH_ATTRS = ("path", "filepath", "file_path", "source")
+_DATA_ATTRS = ("base64_image", "base64_data", "base64", "data", "content", "image", "file_data")
+_NESTED_MEDIA_KEYS = ("file", "input_audio", "audio", "video", "source")
+_MIME_EXTENSIONS = {"audio/wav": ".wav", "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/ogg": ".ogg", "audio/flac": ".flac", "audio/webm": ".webm", "video/mp4": ".mp4", "video/webm": ".webm"}
+_AUDIO_FORMATS = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4", "ogg": "audio/ogg", "flac": "audio/flac", "webm": "audio/webm"}
+_MIME_ATTRS = ("mime_type", "mimetype", "mimeType", "image_mimetype", "document_mimetype", "media_type", "content_type")
+# Media objects that load their own bytes (CrewAI `File.read()`, file-like wrappers).
+_READ_METHODS = ("read_bytes", "read")
+_NAME_ATTRS = ("filename", "file_name", "name", "title")
+
+
+def _extension(mime_type: str) -> str:
+    import mimetypes
+
+    return _MIME_EXTENSIONS.get(mime_type) or mimetypes.guess_extension(mime_type) or ""
+
+
+def _capture_limits():
+    # The most recent client, not get_client(): an app using its own Client must not get a second one
+    # built from the environment, nor lose capture because that environment is incomplete.
+    from ..core import client as client_module
+
+    active = client_module._client or client_module._latest_client
+    if active is None:
+        return False, 65536
+    return bool(active.config.capture_file_text), int(active.config.max_file_bytes)
+
+
+def _bytes_attachment(raw: bytes, *, mime_type=None, filename=None, source="upload") -> dict:
+    """An attachment for in-memory content, honoring the content-capture settings."""
+    import hashlib
+    import mimetypes
+
+    mime_type = mime_type or (mimetypes.guess_type(filename)[0] if filename else None)
+    capture, max_bytes = _capture_limits()
+    attachment = {"source": source, "capture": "metadata_only", "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    # Always name the file with an extension: Console file-type policies match on the name's extension.
+    if mime_type and (not filename or "." not in str(filename).split("/")[-1]):
+        filename = (str(filename).split("/")[-1] if filename else "attachment") + _extension(mime_type)
+    if filename:
+        attachment["filename"] = str(filename).split("/")[-1]
+    if mime_type:
+        attachment["mime_type"] = mime_type
+    if capture:
+        bounded = raw[:max_bytes]
+        if len(raw) > max_bytes:
+            attachment["truncated"] = True
+        if (mime_type or "").startswith("text/"):
+            attachment.update(capture="text", text=bounded.decode("utf-8", errors="replace"))
+        else:
+            import base64
+
+            attachment.update(capture="content", content_base64=base64.b64encode(bounded).decode("ascii"))
+    return attachment
+
+
+def _b64_attachment(data: str, **kwargs) -> dict | None:
+    import base64
+    import binascii
+
+    try:
+        return _bytes_attachment(base64.b64decode(data, validate=False), **kwargs)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _path_attachment(path, *, mime_type=None, filename=None, source="upload") -> dict | None:
+    from pathlib import Path
+
+    try:
+        file_path = Path(path)
+        if not file_path.is_file():
+            return None
+        return _bytes_attachment(file_path.read_bytes(), mime_type=mime_type, filename=filename or file_path.name, source=source)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _url_to_attachment(url: str, *, mime_type=None, filename=None) -> dict:
+    if isinstance(url, str) and url.startswith("data:"):
+        header, _, data = url.partition(",")
+        mime = mime_type or header[5:].split(";")[0] or None
+        name = filename or f"inline.{(mime or 'application/octet-stream').split('/')[-1]}"
+        attachment = _b64_attachment(data, mime_type=mime, filename=name, source="paste") if ";base64" in header else \
+            _bytes_attachment(data.encode(), mime_type=mime, filename=name, source="paste")
+        if attachment:
+            return attachment
+    return {"source": "file_ref", "capture": "metadata_only", "id": str(url),
+            "filename": filename or str(url).split("?")[0].split("/")[-1] or "file"}
+
+
+def _is_file(value: str) -> bool:
+    from pathlib import Path
+
+    try:
+        return len(value) < 4096 and Path(value).is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _first(value: Any, names) -> Any:
+    for name in names:
+        found = value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+        if found not in (None, "", b""):
+            return found
+    return None
+
+
+def _media_attachment(value: Any) -> dict | None:
+    """A file or image given as a dict block or a framework media object, by data, data URL or path."""
+    nested = next((value[key] for key in _NESTED_MEDIA_KEYS if isinstance(value, dict) and isinstance(value.get(key), dict)), None)
+    holder = nested or value
+    mime = _first(holder, _MIME_ATTRS) or _first(value, _MIME_ATTRS)
+    audio_format = holder.get("format") if isinstance(holder, dict) else None
+    if not mime and isinstance(audio_format, str):  # OpenAI: {"input_audio": {"data": ..., "format": "wav"}}
+        mime = _AUDIO_FORMATS.get(audio_format.lower(), f"audio/{audio_format.lower()}")
+    name = _first(holder, _NAME_ATTRS) or (_first(value.get("metadata"), _NAME_ATTRS) if isinstance(value, dict) and isinstance(value.get("metadata"), dict) else None)
+    name = name if isinstance(name, str) else None
+    mime = mime if isinstance(mime, str) else None
+    for attr in ("data_uri", "url", "image_url"):
+        url = _first(holder, (attr,))
+        if isinstance(url, dict):
+            url = url.get("url")
+        if isinstance(url, str) and url.startswith("data:"):
+            return _url_to_attachment(url, mime_type=mime, filename=name)
+    if not isinstance(value, dict):
+        for method in _READ_METHODS:
+            reader = getattr(value, method, None)
+            if callable(reader):
+                try:
+                    data = reader()
+                except Exception:
+                    continue
+                if isinstance(data, (bytes, bytearray)) and data:
+                    return _bytes_attachment(bytes(data), mime_type=mime, filename=name)
+    to_base64 = getattr(value, "to_base64", None)
+    if callable(to_base64):  # AutoGen Image
         try:
-            header, base64_data = url.split(",", 1)
-            mime_part = header.split(";")[0]
-            mime_type = mime_part.split(":", 1)[1]
-            return {
-                "source": "paste",
-                "capture": "content",
-                "mime_type": mime_type,
-                "content_base64": base64_data,
-                "filename": f"inline_image.{mime_type.split('/')[-1]}"
-            }
+            return _b64_attachment(to_base64(), mime_type=mime or "image/png", filename=name or "image.png")
         except Exception:
-            return {
-                "source": "paste",
-                "capture": "metadata_only",
-                "filename": "inline_image"
-            }
-    return {
-        "source": "file_ref",
-        "capture": "metadata_only",
-        "filename": url.split("/")[-1] or "image",
-        "id": url
-    }
+            pass
+    for attr in _DATA_ATTRS:
+        data = _first(holder, (attr,))
+        if isinstance(data, (bytes, bytearray)):
+            return _bytes_attachment(bytes(data), mime_type=mime, filename=name)
+        # A leading "/" is not a path here: every base64 JPEG starts with "/9j/".
+        if isinstance(data, str) and len(data) > 64 and not data.startswith(("http://", "https://")) and not _is_file(data):
+            if data.startswith("data:"):
+                return _url_to_attachment(data, mime_type=mime, filename=name)
+            found = _b64_attachment(data, mime_type=mime, filename=name)
+            if found:
+                return found
+    for attr in _PATH_ATTRS:
+        path = _first(holder, (attr,))
+        if path is not None and not isinstance(path, (dict, list)):
+            found = _path_attachment(str(path), mime_type=mime, filename=name)
+            if found:
+                return found
+    for attr in ("url", "image_url"):
+        url = _first(holder, (attr,))
+        if isinstance(url, dict):
+            url = url.get("url")
+        if isinstance(url, str) and url:
+            return _url_to_attachment(url, mime_type=mime, filename=name)
+    if name:
+        return {"source": "file_ref", "capture": "metadata_only", "filename": name, **({"mime_type": mime} if mime else {})}
+    return None
+
+
+def _is_media_object(value: Any) -> bool:
+    name = type(value).__name__.lower()
+    return any(word in name for word in ("image", "file", "document", "audio", "video", "pdf", "binary")) and \
+        "message" not in name and "agent" not in name and "tool" not in name
+
+
+def extract_attachments_from_value(value: Any, _depth: int = 0, _seen: set | None = None) -> list:
+    """Files and images in framework inputs, so their content is scanned with the prompt.
+
+    Understands OpenAI chat/Responses parts (`image_url`, `input_image`, `file`/`input_file` with
+    `file_data`), LangChain content blocks (`image`/`file` with base64 `data`, `url` or a path),
+    `attachments`/`files`/`images` lists, and media objects such as AutoGen `Image`, LlamaIndex
+    `ImageBlock`/`DocumentBlock`, Haystack `ImageContent`/`FileContent`, Agno `Image`/`File`, DSPy
+    `Image`/`File`, CrewAI `File` and AG2 `ImageInput`/`DocumentInput`, read from their bytes, data URL
+    or path. Content is included only when content capture is on (`GGATE_CAPTURE_FILE_TEXT`).
+    """
+    seen = _seen if _seen is not None else set()
+    if value is None or _depth > 8 or id(value) in seen or isinstance(value, (str, bytes, int, float, bool)):
+        return []
+    seen.add(id(value))
+    found: list = []
+    if isinstance(value, dict):
+        if value.get("capture") and (value.get("content_base64") or value.get("text") or value.get("sha256")):
+            return [value]  # already an SDK attachment
+        if value.get("type") in _MEDIA_TYPES or isinstance(value.get("file"), dict) or isinstance(value.get("input_audio"), dict):
+            attachment = _media_attachment(value)
+            return [attachment] if attachment else []
+        for key in _LIST_KEYS:
+            items = value.get(key)
+            items = items if isinstance(items, (list, tuple)) else ([items] if items is not None else [])
+            for item in items:
+                if isinstance(item, str):
+                    found.append(_path_attachment(item, source="file_ref") or
+                                 {"filename": item.split("/")[-1], "source": "file_ref", "capture": "metadata_only"})
+                else:
+                    found.extend(extract_attachments_from_value(item, _depth + 1, seen) or
+                                 ([a] if (a := _media_attachment(item)) else []))
+        for key, item in value.items():
+            if key not in _LIST_KEYS and isinstance(item, (dict, list, tuple)) or (key not in _LIST_KEYS and not isinstance(item, (str, bytes, int, float, bool, type(None)))):
+                found.extend(extract_attachments_from_value(item, _depth + 1, seen))
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            found.extend(extract_attachments_from_value(item, _depth + 1, seen))
+    elif _is_media_object(value):
+        attachment = _media_attachment(value)
+        if attachment:
+            found.append(attachment)
+    else:
+        for attr in _CONTAINER_ATTRS:
+            item = getattr(value, attr, None)
+            if item is not None and not callable(item) and not isinstance(item, (str, bytes)):
+                found.extend(extract_attachments_from_value(item, _depth + 1, seen))
+    unique, hashes = [], set()
+    for attachment in found:
+        key = attachment.get("sha256") or attachment.get("id") or attachment.get("filename")
+        if key in hashes:
+            continue
+        hashes.add(key)
+        unique.append(attachment)
+    return unique
+

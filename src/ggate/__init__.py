@@ -10,10 +10,10 @@ from .core.decision import (
     SensitivityClassification,
     TopicClassification,
 )
-from .core.event import Attachment
-from .exceptions import GgateBlockedError, GgateError, GgateTransportError
+from .core.event import Attachment, session
+from .exceptions import GgateAgentContainedError, GgateBlockedError, GgateError, GgateTransportError
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 
 def instrument(framework: str, **kwargs):
@@ -135,6 +135,7 @@ __all__ = [
     "Client",
     "Decision",
     "DocumentIntelligence",
+    "GgateAgentContainedError",
     "DocumentTaxonomy",
     "GgateBlockedError",
     "GgateError",
@@ -160,4 +161,5 @@ __all__ = [
     "scan_tool_result_async",
     "scan_web",
     "scan_web_async",
+    "session",
 ]

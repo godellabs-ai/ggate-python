@@ -3,11 +3,15 @@
 Every scan goes to the Console's ``POST /api/v1/scan``. That is the only destination the SDK
 has: it holds the Console URL and an API key, and talks to nothing else.
 
-Latency/failure contract: the SDK never breaks the host application. In ``sync`` mode a scan
-blocks only up to the configured budget for a verdict and fails open on any transport problem;
-after a failure a cooldown breaker fails open instantly instead of re-calling a struggling
-Console on every request. In ``async`` mode (and for post-hoc surfaces like responses and tool
-results) events are queued to a background worker and the call returns immediately.
+Latency/failure contract: a transport problem never breaks the host application. In ``sync`` mode
+a scan blocks only up to the configured budget for a verdict and fails open on any transport
+problem; after a failure a cooldown breaker fails open instantly instead of re-calling a struggling
+Console on every request. In ``async`` mode events are queued to a background worker and the call
+returns immediately.
+
+Kill Switch: a lock the Console reported is the one exception. It raises
+``GgateAgentContainedError`` in both modes, turns ``async`` scanning synchronous so a release is seen
+at once, and stays in force (fails closed) while the Console cannot confirm that release.
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from ..exceptions import GgateBlockedError, GgateTransportError
+from ..exceptions import GgateAgentContainedError, GgateBlockedError, GgateTransportError
 from .config import Config
 from .console_transport import ConsoleTransport
 from .decision import Decision
@@ -28,6 +32,7 @@ from .queue import DeliveryQueue
 logger = logging.getLogger("ggate")
 
 _client: Optional["Client"] = None
+_latest_client: Optional["Client"] = None
 
 _UNCONFIGURED = (
     "GGATE_CONSOLE_URL and GGATE_API_KEY are not set, so there is nowhere to scan: "
@@ -70,6 +75,8 @@ class _UnconfiguredTransport:
 
 class Client:
     def __init__(self, config: Optional[Config] = None, transport=None):
+        global _latest_client
+        _latest_client = self
         self.config = config or Config.from_values()
         if transport is None:
             if self.config.configured:
@@ -80,7 +87,10 @@ class Client:
                 transport = _UnconfiguredTransport()
         self.transport = transport
         self.builder = RuntimeEventBuilder(self.config)
-        self.queue = DeliveryQueue(self.transport, self.config.queue_max, self.config.flush_timeout)
+        self._contained: Optional[Decision] = None
+        self.queue = DeliveryQueue(
+            self.transport, self.config.queue_max, self.config.flush_timeout, on_result=self._on_queued_result
+        )
         self._breaker = _Breaker(self.config.cooldown)
         if self.config.enabled:
             self._report_collector_ready()
@@ -113,9 +123,7 @@ class Client:
     ) -> Decision:
         event, redaction = self.builder.prompt(text, attachments=attachments, **metadata)
         decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_prompt_async(
         self,
@@ -127,9 +135,7 @@ class Client:
     ) -> Decision:
         event, redaction = self.builder.prompt(text, attachments=attachments, **metadata)
         decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def scan_response(
         self,
@@ -144,9 +150,7 @@ class Client:
             metadata["before_delivery"] = True
         event, redaction = self.builder.response(text, attachments=attachments, **metadata)
         decision = self._send_or_queue(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_response_async(
         self,
@@ -161,41 +165,31 @@ class Client:
             metadata["before_delivery"] = True
         event, redaction = self.builder.response(text, attachments=attachments, **metadata)
         decision = await self._send_or_queue_async(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def scan_tool_call(self, tool: str, *, input_summary=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.tool_call(tool, input_summary=input_summary, **metadata)
         decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_tool_call_async(self, tool: str, *, input_summary=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.tool_call(tool, input_summary=input_summary, **metadata)
         decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def scan_tool_result(self, tool: str, output: str, *, wait: bool = False, enforce: bool = False, **metadata) -> Decision:
         if enforce:
             metadata["before_delivery"] = True
         event, redaction = self.builder.tool_result(tool, output, **metadata)
         decision = self._send_or_queue(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_tool_result_async(self, tool: str, output: str, *, wait: bool = False, enforce: bool = False, **metadata) -> Decision:
         if enforce:
             metadata["before_delivery"] = True
         event, redaction = self.builder.tool_result(tool, output, **metadata)
         decision = await self._send_or_queue_async(event, redaction.to_json(), wait=wait or enforce or bool(metadata.get("before_delivery")))
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def scan_file(
         self,
@@ -220,9 +214,7 @@ class Client:
         decision = self._send_or_queue(
             event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_file_async(
         self,
@@ -247,16 +239,12 @@ class Client:
         decision = await self._send_or_queue_async(
             event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def scan_shell(self, command: str, *, argv=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.shell(command, argv=argv, **metadata)
         decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_shell_async(
         self, command: str, *, argv=None, enforce: bool = False, **metadata
@@ -265,18 +253,14 @@ class Client:
         decision = await self._send_or_queue_async(
             event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def scan_web(
         self, url: str, *, method=None, domain=None, enforce: bool = False, **metadata
     ) -> Decision:
         event, redaction = self.builder.web(url, method=method, domain=domain, **metadata)
         decision = self._send_or_queue(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     async def scan_web_async(
         self, url: str, *, method=None, domain=None, enforce: bool = False, **metadata
@@ -285,9 +269,7 @@ class Client:
         decision = await self._send_or_queue_async(
             event, redaction.to_json(), wait=self.config.mode == "sync" or enforce
         )
-        if enforce and decision.blocked:
-            raise GgateBlockedError(decision)
-        return decision
+        return self._finish(decision, enforce)
 
     def attachment_from_path(self, path: str, *, source: str = "upload") -> Attachment:
         return attachment_from_path(path, source=source, config=self.config)
@@ -303,21 +285,57 @@ class Client:
                 self.scan_prompt(prompt, enforce=enforce, **metadata)
             yield self
 
+    @property
+    def contained(self) -> bool:
+        """Whether the Console last reported this agent as locked by the Kill Switch."""
+        return self._contained is not None
+
+    def _finish(self, decision: Decision, enforce: bool) -> Decision:
+        if decision.contained and decision.blocked:
+            raise GgateAgentContainedError(decision)
+        if enforce and decision.blocked:
+            raise GgateBlockedError(decision)
+        return decision
+
+    def _observe(self, decision: Decision) -> Decision:
+        """Track the Kill Switch. Only a real Console answer can set or clear the lock."""
+        if decision.contained:
+            if self._contained is None:
+                logger.warning("ggate: Kill Switch active for this agent: %s", decision.message)
+            self._contained = decision
+        elif not decision.fail_open:
+            if self._contained is not None:
+                logger.warning("ggate: Kill Switch released for this agent")
+            self._contained = None
+        return decision
+
+    def _on_queued_result(self, request, response) -> None:
+        # A queued event's verdict is how an `async` deployment first learns of a lock. From then on
+        # every scan waits for the Console, so a release takes effect at the very next scan.
+        if request.get("op") == "scan_text":
+            self._observe(Decision.from_response(response))
+
+    def _unavailable(self, message: str) -> Decision:
+        """The Console gave no answer: fail open, unless a known lock has not been released."""
+        if self._contained is not None:
+            return Decision.kill_switch_held(self._contained, "the Console has not confirmed a release")
+        return Decision.fail_open_decision(message)
+
     def _send_or_queue(self, event, redaction, *, wait: bool) -> Decision:
         if not self.config.enabled:
             return Decision.pass_()
         request = {"op": "scan_text", "event": event, "redaction": redaction}
-        if not wait:
+        if not wait and self._contained is None:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return Decision.fail_open_decision("console unavailable (cooling down after failure)")
+            return self._unavailable("console unavailable (cooling down after failure)")
         try:
-            decision = Decision.from_response(self.transport.request(request))
+            decision = self._observe(Decision.from_response(self.transport.request(request)))
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open
             self._breaker.trip()
             logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
-            return Decision.fail_open_decision(str(exc))
+            return self._unavailable(str(exc))
         self._breaker.reset()
         return decision
 
@@ -325,17 +343,17 @@ class Client:
         if not self.config.enabled:
             return Decision.pass_()
         request = {"op": "scan_text", "event": event, "redaction": redaction}
-        if not wait:
+        if not wait and self._contained is None:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return Decision.fail_open_decision("console unavailable (cooling down after failure)")
+            return self._unavailable("console unavailable (cooling down after failure)")
         try:
-            decision = Decision.from_response(await self.transport.request_async(request))
+            decision = self._observe(Decision.from_response(await self.transport.request_async(request)))
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open
             self._breaker.trip()
             logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
-            return Decision.fail_open_decision(str(exc))
+            return self._unavailable(str(exc))
         self._breaker.reset()
         return decision
 

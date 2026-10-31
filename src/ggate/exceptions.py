@@ -17,3 +17,12 @@ class GgateBlockedError(GgateError):
     def __init__(self, decision):
         self.decision = decision
         super().__init__(decision.message)
+
+
+class GgateAgentContainedError(GgateBlockedError):
+    """The Console's Kill Switch has locked this agent.
+
+    Subclasses :class:`GgateBlockedError` so existing block handling keeps working. Unlike an ordinary
+    block it is raised even where the caller did not ask to enforce, including ``async`` mode: an agent
+    under a lock must stop, not merely be observed.
+    """

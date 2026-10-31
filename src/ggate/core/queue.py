@@ -24,8 +24,10 @@ _BACKOFF_CAP = 30.0
 
 
 class DeliveryQueue:
-    def __init__(self, transport, maxsize: int, flush_timeout: float):
+    def __init__(self, transport, maxsize: int, flush_timeout: float, on_result=None):
         self._transport = transport
+        # Called with (request, response) so a verdict on a queued event is not thrown away.
+        self._on_result = on_result
         self._maxsize = max(1, maxsize)
         self._flush_timeout = flush_timeout
         self._cond = threading.Condition()
@@ -78,7 +80,9 @@ class DeliveryQueue:
                 self._in_flight = True
             error: Optional[Exception] = None
             try:
-                self._transport.request(request)
+                response = self._transport.request(request)
+                if self._on_result is not None:
+                    self._on_result(request, response)
             except Exception as exc:  # noqa: BLE001 - never kill the worker
                 error = exc
             with self._cond:

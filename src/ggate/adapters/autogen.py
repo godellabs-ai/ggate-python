@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ._common import sync_around, textify, wrap_method
+from ._common import extract_attachments_from_value, latest_user_message, scoped_metadata, sync_around, textify, wrap_method
 from ..core.client import get_client
 
 
@@ -30,23 +30,37 @@ def wrap_agent(agent, *, sdk_client=None, framework: str = "autogen", **metadata
 
     def before(args, kwargs, fw):
         prompt = kwargs.get("task") or kwargs.get("message") or (args[0] if args else None)
-        from ._common import extract_attachments_from_value
+        if isinstance(prompt, (list, tuple)):
+            prompt = [part for part in prompt if isinstance(part, str)] or latest_user_message(prompt)
         attachments = extract_attachments_from_value(kwargs)
         attachments.extend(extract_attachments_from_value(args))
-        sdk.scan_prompt(textify(prompt), attachments=attachments, enforce=sdk.config.mode == "sync", framework=fw, **metadata)
+        sdk.scan_prompt(textify(prompt), attachments=attachments, enforce=sdk.config.mode == "sync", framework=fw, **scoped_metadata(metadata))
 
     def after(result, fw):
         text = _task_result_to_text(result)
         if text:
-            sdk.scan_response(text, framework=fw, **metadata)
+            sdk.scan_response(text, enforce=sdk.config.mode == "sync", framework=fw, **scoped_metadata(metadata))
 
-    for method in ("run", "run_stream", "a_run", "a_run_stream", "initiate_chat"):
+    # AutoGen AgentChat: run/run_stream. AG2 0.x: initiate_chat. AG2 1.x: ask/run.
+    for method in ("run", "run_stream", "a_run", "a_run_stream", "initiate_chat", "ask", "a_ask"):
         wrap_method(agent, method, sync_around(before, after, framework))
     return agent
 
 
 def _task_result_to_text(result: Any) -> str:
+    """The agents' final answer. A TaskResult's messages begin with the user's task."""
+    if isinstance(result, (list, tuple)):  # run_stream: messages, then the TaskResult
+        result = next((item for item in reversed(result) if hasattr(item, "messages")), result)
     messages = getattr(result, "messages", None)
+    if messages is None and isinstance(result, (list, tuple)):
+        messages = result
     if messages:
-        return textify(messages)
-    return textify(result)
+        for message in reversed(list(messages)):
+            if str(getattr(message, "source", "")) == "user":
+                continue
+            text = textify(getattr(message, "content", None))
+            if text:
+                return text
+        return ""
+    summary = getattr(result, "summary", None)  # AG2 ChatResult
+    return textify(summary if summary is not None else result)

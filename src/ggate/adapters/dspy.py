@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._common import sync_around, textify, wrap_method
+from ._common import scoped_metadata, sync_around, textify, wrap_method
 from ..core.client import get_client
 
 
@@ -26,16 +26,29 @@ def wrap_module(module, *, sdk_client=None, framework: str = "dspy", **metadata)
     sdk = sdk_client or get_client()
 
     def before(args, kwargs, fw):
-        sdk.scan_prompt(textify(kwargs or args), enforce=sdk.config.mode == "sync", framework=fw, **metadata)
+        from ._common import extract_attachments_from_value
+        attachments = extract_attachments_from_value(kwargs) + extract_attachments_from_value(args)
+        text = textify({key: value for key, value in kwargs.items() if isinstance(value, str)} or args)
+        sdk.scan_prompt(text, attachments=attachments, enforce=sdk.config.mode == "sync", framework=fw, **scoped_metadata(metadata))
 
     def after(result, fw):
-        text = textify(result)
+        text = _prediction_text(result)
         if text:
-            sdk.scan_response(text, framework=fw, **metadata)
+            sdk.scan_response(text, enforce=sdk.config.mode == "sync", framework=fw, **scoped_metadata(metadata))
 
-    for method in ("__call__", "forward", "aforward"):
+    # `Module.__call__` runs `forward`, so scanning here covers both the module and the returned
+    # wrapper without recording each prompt twice.
+    for method in ("forward", "aforward"):
         wrap_method(module, method, sync_around(before, after, framework))
     return DSPyModuleWrapper(module, before=before, after=after, framework=framework)
+
+
+def _prediction_text(result) -> str:
+    """A Prediction's output fields, without its repr."""
+    to_dict = getattr(result, "toDict", None)
+    if callable(to_dict):
+        return "\n".join(part for part in (textify(value) for value in to_dict().values()) if part)
+    return textify(result)
 
 
 class DSPyModuleWrapper:
@@ -49,8 +62,6 @@ class DSPyModuleWrapper:
         return getattr(self._target, name)
 
     def __call__(self, *args, **kwargs):
-        self._before(args, kwargs, self._framework)
-        result = self._target(*args, **kwargs)
-        from ._common import maybe_awaitable_after
-
-        return maybe_awaitable_after(result, lambda value: self._after(value, self._framework))
+        if hasattr(self._target, "forward"):  # scanned by the wrapped forward
+            return self._target(*args, **kwargs)
+        return sync_around(self._before, self._after, self._framework)(self._target)(*args, **kwargs)

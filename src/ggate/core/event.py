@@ -38,7 +38,7 @@ from urllib.parse import urlparse
 from .config import Config
 from .redactor import RedactionSummary, redact_text, sha256_hex
 
-SDK_VERSION = "0.2.1"
+SDK_VERSION = "0.3.0"
 
 # Normalized to the Rust `std::env::consts` vocabulary the rest of the fleet reports
 # (platform_os is a Console dimension, so casing must match the hook collectors).
@@ -95,6 +95,7 @@ def attachment_from_path(path: str | os.PathLike[str], *, source: str = "upload"
     redaction_count = None
     capture = "metadata_only"
     mime_type = mimetypes.guess_type(file_path.name)[0]
+    mime_type = {"audio/x-wav": "audio/wav"}.get(mime_type, mime_type)
 
     captured = bytearray()
     hasher = hashlib.sha256()
@@ -139,6 +140,28 @@ def _now() -> str:
 
 def _clean_dict(data: Mapping[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in data.items() if v is not None and v != {} and v != []}
+
+
+def current_session_id() -> Optional[str]:
+    """The session bound by an enclosing event_context()/monitor(), if any."""
+    return _context.get().get("session_id")
+
+
+def current_session_id() -> Optional[str]:
+    """The session bound by an enclosing session()/monitor(), if any."""
+    return _context.get().get("session_id")
+
+
+@contextmanager
+def session(session_id: Optional[str] = None, **metadata) -> Iterator[str]:
+    """One conversation: every event in this scope, across all adapters, joins the same session.
+
+    Pass the app's own conversation id so a conversation stays one session across requests; without
+    one a fresh id is generated for the scope.
+    """
+    resolved = str(session_id) if session_id else f"py-sdk-{uuid.uuid4()}"
+    with event_context(session_id=resolved, **metadata):
+        yield resolved
 
 
 @contextmanager

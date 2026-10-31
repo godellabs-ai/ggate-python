@@ -38,6 +38,25 @@ and tool operations need their own adapter or explicit scans; Microsoft-managed 
 remote attachment bytes are not automatically visible. Python conversation context propagates
 to nested explicit scans and is isolated between concurrent turns.
 
+### Changes in 0.3.0
+
+- **Kill Switch.** A lock in the Console raises `GgateAgentContainedError` (a `GgateBlockedError`) in
+  `sync` and `async` mode, even where the caller did not pass `enforce`. In `async` mode the first
+  queued verdict turns scanning synchronous, so an unlock is seen at the next scan. A known lock stays
+  in force while the Console cannot confirm its release; an outage with no lock still fails open.
+- **Sessions.** `with ggate.session(conversation_id):` puts every event of a turn in one session, across
+  all adapters. A session bound at call time beats one given to `instrument()`. LangChain and LangGraph
+  also read `session_id` / `thread_id` from run metadata and share a session across nested runs.
+- **One event, one text.** Prompts hold the newest user message, not the resent history. Responses hold
+  the answer, without the task (AutoGen), the conversation (Haystack), or an echoed prompt or chat
+  template (Hugging Face pipelines). Nested run methods record one turn. LlamaIndex records only LLM events.
+- **Responses in `sync` mode** are checked by adapters before they are returned, so a block withholds
+  the answer. This adds one waited scan per model call. Streamed text cannot be recalled.
+- **Streaming** OpenAI calls are recorded when the stream ends. Async adapters no longer scan on the
+  event loop. LangChain adapters stop on a block by themselves.
+- **Media.** Audio and video parts join images and files: OpenAI `input_audio`, LangChain `audio`/`video`
+  blocks, Anthropic-style `source` blocks, and framework media objects. CrewAI 1.x uses execution hooks.
+
 ### Changes in 0.2.1
 
 - `enforce=True` always waits, even if the default mode is `async`.

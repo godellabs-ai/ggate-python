@@ -136,6 +136,15 @@ class Decision:
         return self.verdict == "block"
 
     @property
+    def contained(self) -> bool:
+        """True when the Console's Kill Switch has locked this agent for this identity.
+
+        Read from the reason code rather than the verdict: the Console records a lock hit on an
+        already-delivered event as ``warn``, and that event still proves the lock exists.
+        """
+        return "agent_contained" in self.reason_codes
+
+    @property
     def hard_blocked(self) -> bool:
         """Deprecated compatibility alias; all current blocks are final/non-circumventable."""
         return self.blocked
@@ -159,6 +168,18 @@ class Decision:
             message=message,
             reason_codes=["engine_unreachable"],
             fail_open=True,
+        )
+
+    @classmethod
+    def kill_switch_held(cls, last: "Decision", reason: str) -> "Decision":
+        """Keep a known lock in force while the Console cannot confirm its release."""
+        return cls(
+            verdict="block",
+            message=f"{last.message} (Kill Switch held: {reason})",
+            reason_codes=[*last.reason_codes, "kill_switch_held"],
+            matched_detectors=last.matched_detectors,
+            policy_source=last.policy_source,
+            detection=last.detection,
         )
 
     @classmethod
