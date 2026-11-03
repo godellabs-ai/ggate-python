@@ -111,13 +111,52 @@ ggate.scan_response(
   Assistant"`, not the framework it is built on. The Console lists sessions under this name, so
   three assistants built on LangGraph stay three distinguishable agents. The framework is still
   reported alongside it and still drives the connector view.
-- **`team`** is who is accountable for it. A deployed agent has no person at a keyboard, so the
-  seat identity falls back to the build machine's `<os-user>@<hostname>` — whoever ran the deploy,
-  not whoever owns the workload. The seat identity is still reported unchanged; `team` is the name
-  shown beside it.
+- **`team`** is the workload's owning team. User identity comes from the configured `user` /
+  `GGATE_USER`, falling back to the runtime machine's `<os-user>@<hostname>`. Shared applications
+  should bind their authenticated user per request as described below.
 
 `agent_name` usually belongs in code (every install of an app is the same named agent), while
 `team` usually belongs in the environment (it varies per deployment).
+
+### AI access rules and application users
+
+The Console's **Policies → Authorised AI** access rules apply to SDK scans. Select the named
+application (`agent_name`), its framework, or all supported agents. The Console resolves users,
+groups, and user tags from its endpoint directory. `team` describes workload ownership; it does
+not grant directory group membership.
+
+In a shared application, bind the authenticated user's endpoint email or directory alias for the
+whole request. Use a value verified by your server's authentication layer, never an identity
+supplied directly in a prompt or request body:
+
+```python
+with ggate.session(conversation_id, user=authenticated_user_email):
+    # Explicit preflight waits even if GGATE_MODE=async; a block raises GgateBlockedError.
+    await ggate.scan_prompt_async(prompt, framework="langgraph", enforce=True)
+    answer = await run_agent(prompt)
+    await ggate.scan_response_async(answer, framework="langgraph", enforce=True)
+    # Deliver only after the final scan returns.
+```
+
+`ggate.event_context(user=...)` binds just the user without changing the session. Both scopes follow
+async calls and instrumented adapters and restore the previous identity on exit. A scan's `user=`
+overrides the scope; the scope overrides the configured `user` / `GGATE_USER`. An explicit `None`
+or blank user means anonymous and clears the fallback. Set it explicitly for unauthenticated requests.
+Without an override, existing single-user/service deployments keep their configured identity.
+
+Block rules prevent operations only when scans run before the operation with `enforce=True`, or
+the application checks the returned verdict. Adapter enforcement follows `GGATE_MODE=sync`.
+Audit calls cannot prevent an operation already performed. Warn remains an allowed decision for
+the application to present; `decision.policy_source` and `decision.matched_policies` retain policy
+IDs and names, including Monitor matches. Ordinary access blocks are evaluated again at the next
+scan. Cached Kill Switch locks are separate per user and framework; `client.contained` means at
+least one such lock is known.
+
+SDK API keys do not establish a human provider login or subscription plan. Approved **provider
+account domains** and observed plan tags come from coding-agent/browser collectors. SDK access
+rules use the endpoint user's Console identity and existing directory tags; the SDK does not
+claim provider email, plan, groups, or tags from request metadata. Existing transport fail-open
+behavior is unchanged; applications requiring fail-closed preflight must also check `decision.fail_open`.
 
 Framework instrumentation — see [docs/framework-coverage.md](docs/framework-coverage.md) for the
 full matrix of what each adapter hooks and where it can enforce:

@@ -130,6 +130,7 @@ class Decision:
     # Preserve the Console's issue lists and media evidence separately from enforcement.
     pipeline_status: Optional[Dict[str, Any]] = None
     media_gate: Optional[Dict[str, Any]] = None
+    matched_policies: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def blocked(self) -> bool:
@@ -179,6 +180,7 @@ class Decision:
             reason_codes=[*last.reason_codes, "kill_switch_held"],
             matched_detectors=last.matched_detectors,
             policy_source=last.policy_source,
+            matched_policies=last.matched_policies,
             detection=last.detection,
         )
 
@@ -205,6 +207,7 @@ class Decision:
             reason_codes=list(value.get("reason_codes") or []),
             matched_detectors=list(value.get("matched_detectors") or []),
             policy_source=value.get("policy_source"),
+            matched_policies=list(value.get("matched_policies") or []),
             detection=value.get("detection"),
             document_intelligence=(
                 DocumentIntelligence.from_json(intelligence)
@@ -223,6 +226,7 @@ class Decision:
             "message": self.message,
             "matched_detectors": self.matched_detectors,
             "policy_source": self.policy_source,
+            "matched_policies": self.matched_policies,
             "fail_open": self.fail_open,
         }
         if self.detection is not None:

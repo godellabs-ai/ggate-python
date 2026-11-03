@@ -166,14 +166,24 @@ def session(session_id: Optional[str] = None, **metadata) -> Iterator[str]:
 
 @contextmanager
 def event_context(**metadata) -> Iterator[None]:
-    """Bind metadata (framework, session_id, model, ...) to every event in this scope."""
+    """Bind metadata to scans across awaits/adapters; user=None explicitly means anonymous."""
     current = dict(_context.get())
-    current.update({k: v for k, v in metadata.items() if v is not None})
+    current.update({k: v for k, v in metadata.items() if v is not None or k == "user"})
+    if "user" in current:
+        current["user"] = _normalize_user(current["user"])
     token = _context.set(current)
     try:
         yield
     finally:
         _context.reset(token)
+
+
+def _normalize_user(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("user must be a string or None")
+    return value.strip() or None
 
 
 def _redact_value(value: Any, depth: int = 0) -> Tuple[Any, int]:
@@ -361,7 +371,7 @@ class RuntimeEventBuilder:
 
     def _event(self, phase: str, payload: Dict[str, Any], *, primary_text: str, **metadata):
         merged = dict(_context.get())
-        merged.update({k: v for k, v in metadata.items() if v is not None})
+        merged.update({k: v for k, v in metadata.items() if v is not None or k == "user"})
         framework = str(merged.get("framework", "generic"))
         model = merged.get("model")
 
@@ -380,7 +390,7 @@ class RuntimeEventBuilder:
             "identity": _clean_dict(
                 {
                     "org_id": self.config.org_id,
-                    "user": self.config.user,
+                    "user": _normalize_user(merged.get("user", self.config.user)),
                     "host": self.config.host,
                     "workstation_id": self.config.workstation_id,
                     "agent_source": "agent-framework",

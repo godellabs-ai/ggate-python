@@ -10,7 +10,7 @@ from .core.decision import (
     SensitivityClassification,
     TopicClassification,
 )
-from .core.event import Attachment, session
+from .core.event import Attachment, event_context, session
 from .exceptions import GgateAgentContainedError, GgateBlockedError, GgateError, GgateTransportError
 
 __version__ = "0.3.0"
@@ -142,6 +142,7 @@ __all__ = [
     "GgateTransportError",
     "SensitivityClassification",
     "TopicClassification",
+    "event_context",
     "flush",
     "get_client",
     "init",

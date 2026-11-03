@@ -17,6 +17,8 @@ at once, and stays in force (fails closed) while the Console cannot confirm that
 from __future__ import annotations
 
 import logging
+import re
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -87,7 +89,8 @@ class Client:
                 transport = _UnconfiguredTransport()
         self.transport = transport
         self.builder = RuntimeEventBuilder(self.config)
-        self._contained: Optional[Decision] = None
+        self._containments: dict[tuple[Optional[str], str], Decision] = {}
+        self._containment_guard = threading.Lock()
         self.queue = DeliveryQueue(
             self.transport, self.config.queue_max, self.config.flush_timeout, on_result=self._on_queued_result
         )
@@ -287,8 +290,9 @@ class Client:
 
     @property
     def contained(self) -> bool:
-        """Whether the Console last reported this agent as locked by the Kill Switch."""
-        return self._contained is not None
+        """Whether any user/framework on this client has a known Kill Switch lock."""
+        with self._containment_guard:
+            return bool(self._containments)
 
     def _finish(self, decision: Decision, enforce: bool) -> Decision:
         if decision.contained and decision.blocked:
@@ -297,45 +301,60 @@ class Client:
             raise GgateBlockedError(decision)
         return decision
 
-    def _observe(self, decision: Decision) -> Decision:
+    def _observe(self, decision: Decision, subject) -> Decision:
         """Track the Kill Switch. Only a real Console answer can set or clear the lock."""
-        if decision.contained:
-            if self._contained is None:
-                logger.warning("ggate: Kill Switch active for this agent: %s", decision.message)
-            self._contained = decision
-        elif not decision.fail_open:
-            if self._contained is not None:
-                logger.warning("ggate: Kill Switch released for this agent")
-            self._contained = None
+        with self._containment_guard:
+            was_held = subject in self._containments
+            if decision.contained:
+                self._containments[subject] = decision
+            elif not decision.fail_open:
+                self._containments.pop(subject, None)
+        if decision.contained and not was_held:
+            logger.warning("ggate: Kill Switch active for this agent: %s", decision.message)
+        elif not decision.contained and not decision.fail_open and was_held:
+            logger.warning("ggate: Kill Switch released for this agent")
         return decision
 
     def _on_queued_result(self, request, response) -> None:
         # A queued event's verdict is how an `async` deployment first learns of a lock. From then on
         # every scan waits for the Console, so a release takes effect at the very next scan.
         if request.get("op") == "scan_text":
-            self._observe(Decision.from_response(response))
+            self._observe(Decision.from_response(response), self._subject(request["event"]))
 
-    def _unavailable(self, message: str) -> Decision:
+    def _unavailable(self, message: str, subject) -> Decision:
         """The Console gave no answer: fail open, unless a known lock has not been released."""
-        if self._contained is not None:
-            return Decision.kill_switch_held(self._contained, "the Console has not confirmed a release")
+        held = self._held(subject)
+        if held is not None:
+            return Decision.kill_switch_held(held, "the Console has not confirmed a release")
         return Decision.fail_open_decision(message)
+
+    @staticmethod
+    def _subject(event):
+        # Named agent/team are fixed on this client. Framework can vary between scans.
+        user = event["identity"].get("user")
+        framework = re.sub(r"[^a-z0-9]+", "-", event["source"]["client"].lower()).strip("-")
+        return (user.strip().lower() if user else None, framework)
+
+    def _held(self, subject) -> Optional[Decision]:
+        with self._containment_guard:
+            return self._containments.get(subject)
 
     def _send_or_queue(self, event, redaction, *, wait: bool) -> Decision:
         if not self.config.enabled:
             return Decision.pass_()
         request = {"op": "scan_text", "event": event, "redaction": redaction}
-        if not wait and self._contained is None:
+        subject = self._subject(event)
+        if not wait and self._held(subject) is None:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return self._unavailable("console unavailable (cooling down after failure)")
+            return self._unavailable("console unavailable (cooling down after failure)", subject)
         try:
-            decision = self._observe(Decision.from_response(self.transport.request(request)))
+            decision = self._observe(Decision.from_response(self.transport.request(request)), subject)
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open
             self._breaker.trip()
             logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
-            return self._unavailable(str(exc))
+            return self._unavailable(str(exc), subject)
         self._breaker.reset()
         return decision
 
@@ -343,17 +362,18 @@ class Client:
         if not self.config.enabled:
             return Decision.pass_()
         request = {"op": "scan_text", "event": event, "redaction": redaction}
-        if not wait and self._contained is None:
+        subject = self._subject(event)
+        if not wait and self._held(subject) is None:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return self._unavailable("console unavailable (cooling down after failure)")
+            return self._unavailable("console unavailable (cooling down after failure)", subject)
         try:
-            decision = self._observe(Decision.from_response(await self.transport.request_async(request)))
+            decision = self._observe(Decision.from_response(await self.transport.request_async(request)), subject)
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open
             self._breaker.trip()
             logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
-            return self._unavailable(str(exc))
+            return self._unavailable(str(exc), subject)
         self._breaker.reset()
         return decision
 
