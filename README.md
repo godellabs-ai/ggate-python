@@ -14,8 +14,9 @@ The Node.js SDK is [godellabs-ai/ggate-node](https://github.com/godellabs-ai/gga
 
 ## Release compatibility
 
-This SDK release is **0.2.1**, aligned with Gödel Gate Console **0.2.1**.
-Use SDK **0.2.y** with Console **0.2.x**; SDK patch releases may advance independently.
+This SDK release is **0.3.0**, released with Gödel Gate Console **0.3.0**.
+Install a release tag rather than the moving default branch. Keep the SDK release selected by your Console when maintaining an older deployment.
+SDK patch releases may advance independently within **0.3.x**. Keep an older SDK release for an older Console and validate minor upgrades together.
 
 ### Microsoft 365 Agents SDK
 
@@ -72,7 +73,7 @@ to nested explicit scans and is isolated between concurrent turns.
 ## Install
 
 ```bash
-python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git"
+python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git@v0.3.0"
 ```
 
 The core package has no dependencies. Framework adapters import the framework you already use;

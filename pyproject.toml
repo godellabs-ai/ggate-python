@@ -38,7 +38,7 @@ all = [
   "phidata>=2.7.10,<3",
   "agno>=3.1.11,<4",
 ]
-dev = ["pytest>=9.2.0,<10", "microsoft-agents-hosting-core>=1.9.0,<2"]
+dev = ["pytest>=9.2.0,<10", "microsoft-agents-hosting-core>=1.9.0,<2", "langchain-core>=1.7.1,<2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ggate"]
