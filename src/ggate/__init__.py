@@ -13,7 +13,7 @@ from .core.decision import (
 from .core.event import Attachment, event_context, session
 from .exceptions import GgateAgentContainedError, GgateBlockedError, GgateError, GgateTransportError
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 
 def instrument(framework: str, **kwargs):

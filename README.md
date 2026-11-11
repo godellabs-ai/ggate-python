@@ -14,7 +14,7 @@ The Node.js SDK is [godellabs-ai/ggate-node](https://github.com/godellabs-ai/gga
 
 ## Release compatibility
 
-This SDK release is **0.3.0**, released with Gödel Gate Console **0.3.0**.
+This SDK release is **0.3.1**, released with Gödel Gate Console **0.3.1**.
 Install a release tag rather than the moving default branch. Keep the SDK release selected by your Console when maintaining an older deployment.
 SDK patch releases may advance independently within **0.3.x**. Keep an older SDK release for an older Console and validate minor upgrades together.
 
@@ -38,6 +38,12 @@ See the runnable [Microsoft 365 example](examples/microsoft-365-agent/README.md)
 and tool operations need their own adapter or explicit scans; Microsoft-managed internals and
 remote attachment bytes are not automatically visible. Python conversation context propagates
 to nested explicit scans and is isolated between concurrent turns.
+
+### Changes in 0.3.1
+
+- Documents that Gate masks evaluated events before storage; SDK redaction remains optional.
+- Released with Console 0.3.1. `Decision.pipeline_status` passes through new Console fields such as
+  `file_extension_exemptions` unchanged. No runtime or API behavior changes from 0.3.0.
 
 ### Changes in 0.3.0
 
@@ -73,7 +79,7 @@ to nested explicit scans and is isolated between concurrent turns.
 ## Install
 
 ```bash
-python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git@v0.3.0"
+python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git@v0.3.1"
 ```
 
 The core package has no dependencies. Framework adapters import the framework you already use;
@@ -198,6 +204,12 @@ application, and it must not silently look like an all-clear either.
 The SDK sends **unredacted** content by default. The Console is the detection engine, so
 client-side masking would hide exactly the secrets it exists to catch; set `GGATE_REDACT=1` for
 deployments that would rather lose those detections than let the content leave the process.
+
+Gate is responsible for masking the evaluated event before storage, including nested tool
+arguments and detected personal data. Keep Gate updated with its storage-redaction fixes;
+an SDK update cannot protect records written by an older server. A block prevents the guarded
+action, but the content has already been sent to Gate for evaluation. SDK masking is an optional,
+pattern-based privacy control, not a substitute for server-side storage masking.
 
 ## Verdicts
 
