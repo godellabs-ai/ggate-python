@@ -1,0 +1,4 @@
+agent-framework-anthropic==1.0.0b261106
+azure-ai-projects==2.10.0
+azure-identity==1.27.0
+anthropic==1.17.0

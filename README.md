@@ -317,6 +317,13 @@ that machine's other collectors. Environment variables:
 
 The same values can be passed programmatically to `ggate.init(...)`.
 
+## Cloud agent applications
+
+See [cloud agent applications](examples/cloud-agents/README.md) for AWS LangGraph and Strands,
+Lambda shutdown flushing, Azure Semantic Kernel and managed-agent integration, and Google ADK
+callbacks. The guide distinguishes caller-controlled scan boundaries from hosted service internals
+and explains how to reconcile scan events in Activity.
+
 ## Development
 
 ```bash

@@ -1,0 +1,2 @@
+semantic-kernel==1.47.0
+anthropic==2.6.0
