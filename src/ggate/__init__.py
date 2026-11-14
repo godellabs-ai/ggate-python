@@ -118,6 +118,14 @@ def scan_tool_call(tool: str, input_summary=None, **kwargs) -> Decision:
     return get_client().scan_tool_call(tool, input_summary=input_summary, **kwargs)
 
 
+def scan_memory_write(content, **kwargs) -> Decision:
+    return get_client().scan_memory_write(content, **kwargs)
+
+
+async def scan_memory_write_async(content, **kwargs) -> Decision:
+    return await get_client().scan_memory_write_async(content, **kwargs)
+
+
 def scan_tool_result(tool: str, output: str, **kwargs) -> Decision:
     return get_client().scan_tool_result(tool, output, **kwargs)
 
@@ -157,6 +165,8 @@ __all__ = [
     "scan_shell",
     "scan_shell_async",
     "scan_tool_call",
+    "scan_memory_write",
+    "scan_memory_write_async",
     "scan_tool_call_async",
     "scan_tool_result",
     "scan_tool_result_async",
@@ -164,3 +174,7 @@ __all__ = [
     "scan_web_async",
     "session",
 ]
+
+from .adapters.memory import GuardedStore, guard_store
+from .adapters.vector_store import GuardedVectorStore, guard_vector_store
+__all__ += ["GuardedVectorStore", "guard_vector_store"]

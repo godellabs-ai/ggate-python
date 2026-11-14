@@ -267,6 +267,17 @@ Transport failures fail open; missing agent identity and explicit block enforcem
   unconfigured) yields an allow decision with `fail_open=True`. After a failure the SDK fails
   open instantly for a cooldown (`GGATE_COOLDOWN_SECS`, default 30) instead of re-calling a
   struggling Console on every request.
+- **Console outages**: under Console Settings → General → *Behaviour when the Console is down*
+  an administrator sets a default (fail open or fail closed) and exceptions that get the opposite —
+  endpoint users, teams, user tags, coding agents, provider domains, or SDK agent names such as this
+  client's `agent_name`. Every answered scan carries what applies to its user
+  (`console_outage_action`) and to this agent's other users (`console_outage_fallback`); the SDK
+  remembers both (`client.console_outage_action(user)`). When that answer is `block`, a waited-for scan
+  that cannot reach the Console at all — no connection, or a gateway answering 502/503/504 for it — returns a `block`
+  decision with reason code `console_unreachable` (raised by `enforce` calls), for the rest of the
+  cooldown too. A Console that answered with an error, a scan still running when `GGATE_TIMEOUT_MS`
+  ran out, and a process that has not yet heard from the Console keep failing open. Queued
+  (audit) scans are never blocked.
 - **Background queue**: bounded (`GGATE_QUEUE_MAX`, drop-oldest), retries transient failures
   with capped backoff, and its shutdown flush is deadline-bounded (`GGATE_FLUSH_TIMEOUT_MS`,
   default 3000) so application exit never hangs. Call `ggate.flush()` to drain explicitly.
@@ -275,10 +286,10 @@ Transport failures fail open; missing agent identity and explicit block enforcem
 
 ## Configuration
 
-`GGATE_CONSOLE_URL` and `GGATE_API_KEY` are required, as are the agent's name and owning team
+A Console URL and API key source are required, as are the agent's name and owning team
 (in code or via `GGATE_AGENT_NAME` / `GGATE_TEAM`); everything else has a default. Identity
 falls back to the device config at `~/.ggate/config.yaml` when an agent installed on the same
-machine wrote one — read for identity only, so SDK events land under the same org/seat/device as
+machine wrote one — also used for Console URL and credentials, so SDK events land under the same org/seat/device as
 that machine's other collectors. Environment variables:
 
 | Variable | Meaning | Default |
@@ -286,8 +297,8 @@ that machine's other collectors. Environment variables:
 | `GGATE_AGENT_NAME` | agent name — **required** (or `agent_name`) | unset |
 | `GGATE_TEAM` | owning team — **required** (or `team`) | unset |
 | `GGATE_MODE` | `sync` (enforce) or `async` (observe) | `sync` |
-| `GGATE_CONSOLE_URL` | Console base URL, e.g. `https://godel-gate.example.com` — **required** | unset |
-| `GGATE_API_KEY` | Console IAM API key (`godel_...`) — **required** | unset |
+| `GGATE_CONSOLE_URL` | Console base URL override, e.g. `https://godel-gate.example.com` | config `api_url` |
+| `GGATE_API_KEY` | Legacy environment fallback for the Console IAM API key | config `api_key` first |
 | `GGATE_CONSOLE_CA_CERT` | PEM CA used to verify a private-CA Console | system trust |
 | `GGATE_TIMEOUT_MS` | per-request timeout (Python: socket-operation timeout) | 4000 |
 | `GGATE_DISABLED` | `1` disables the SDK entirely | off |
@@ -319,3 +330,78 @@ live-Console smoke test, policy enforcement, and per-framework checks.
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
+
+## Credential rotation and workload identity
+
+The SDK reads the optional collector config at `GGATE_CONFIG`, otherwise
+`$GGATE_HOME/config.yaml` (default `~/.ggate/config.yaml`). Its `api_url` supplies the Console URL
+when no explicit URL/environment override is set. The default API key comes from `api_key` in
+that file; `GGATE_API_KEY` remains a fallback.
+
+For an organization-managed environment secret, set `GGATE_API_KEY_ENV=COMPANY_GATE_KEY` or
+`api_key_env: COMPANY_GATE_KEY` in the config. This selects the **name** of the environment
+variable, not the secret. A selected source that is empty does not fall back to a stale config key.
+All coding-agent hooks support the same config/environment selector. Environment updates must
+reach the agent/service process (usually by relaunching it).
+
+For live SDK rotation, use `GGATE_API_KEY_FILE=/mounted/secret` or a synchronous key-provider
+callback. The SDK rereads the selected key source before authentication and discards cached
+access/refresh tokens when it changes. Provider, named environment, and mounted file selectors
+are authoritative in that order, followed by an explicit API key, config key and legacy environment
+fallback. Update the selected source, verify a scan, then revoke the old key; this does not provide
+a server-side rotation grace window or promise zero failed in-flight scans.
+
+Enable `GGATE_CLOUD_INSTANCE_METADATA=1` and Console **Settings → General → Cloud instance
+metadata** to include allowlisted AWS/GCP/Azure metadata plus pod/function identity. Kubernetes
+uses `POD_NAMESPACE`, `POD_NAME`, `POD_UID`, `NODE_NAME`, `POD_SERVICE_ACCOUNT`; Lambda, Cloud Run
+and Azure Functions use their service/function/instance variables. Metadata discovery never reads
+role credentials or identity tokens. Explicit workload identity is also allowlisted. The discovered
+identity is cached per client; recreate the client after a workload move.
+
+Options are `api_key_env`, `api_key_file`, `api_key_provider`, `cloud_instance_metadata` and
+`workload_identity`. For example: `ggate.init(agent_name="Assistant", team="Platform",
+api_key_provider=lambda: secret_cache.current_key)`.
+
+## Retrieval and memory protection
+
+The LangChain/LangGraph callback includes `on_retriever_start`, `on_retriever_end` and
+`on_retriever_error`. In sync mode, returned documents are scanned before reaching the model and
+block exceptions propagate. Async mode remains observation. Metadata `agent_id`/`agent_type`
+is inherited from parent runs and sent on tool events; direct scan calls accept the same fields.
+
+Use `ggate.guard_store(store, sdk_client=client)` around a backing store with `put/get` or
+`aput/aget`. The facade checks writes before invoking the store and checks read values before
+returning them. It always requests enforcement. Batch/delete methods are not exposed; call the
+wrapped methods for protected access. It does not intercept an unwrapped store or remote memory.
+
+`client.scan_memory_write(content, store="memory", operation="put")` and
+`await client.scan_memory_write_async(...)` scan JSON-compatible plaintext and metadata before
+persistence. The module-level equivalents are also exported. They always wait, even in async
+mode, and raise `GgateBlockedError` on Block by default. Pass `enforce=False` only when the caller
+will inspect the returned decision before writing. Store facades always enforce.
+
+For vector stores, supply a selector for all plaintext and metadata in the batch:
+
+```python
+protected = ggate.guard_vector_store(
+    collection, sdk_client=client,
+    content_of=lambda operation, args, kwargs: {
+        "documents": kwargs["documents"], "metadatas": kwargs.get("metadatas")
+    },
+)
+protected.upsert(ids=["note-1"], documents=["The customer prefers concise answers."])
+```
+
+The facade exposes existing `add`, `upsert`, `update`, `add_texts`, `add_documents` methods and
+their `a`-prefixed async forms; native async methods also work. It scans the entire batch before
+one provider call and preserves the provider's arguments and return value. No other methods are
+forwarded. Materialize iterators before passing them, and adapt `content_of` to your provider's
+arguments. Embeddings alone cannot reveal poisoned instructions; supply their original text or
+scan before embedding with `scan_memory_write`.
+
+Enable **Block poisoned memory writes** in Console Policies and select **Block** (the shipped
+default is Monitor). Requires SDK and Gate builds containing this control. The event remains a
+pre-action `mcp_tool` with tool `memory.write`, so normal rules, models, identity and storage
+redaction apply. Transport failures retain the SDK's configured outage/fail-open behavior;
+these guards are not an offline guarantee. Unwrapped writes, provider-side memory and delete
+APIs remain outside the facade.

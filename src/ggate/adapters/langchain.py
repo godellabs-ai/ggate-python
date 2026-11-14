@@ -12,6 +12,8 @@ from ._common import (
     template_user_text,
     textify,
 )
+import json
+
 from ..core.client import get_client
 from ..core.event import current_session_id
 
@@ -100,6 +102,26 @@ class GgateCallbackHandler(BaseCallbackHandler):
         tool = kwargs.get("name") or run.get("tool") or "tool"
         self.sdk.scan_tool_result(tool, textify(output) or str(output), enforce=self._enforce, framework=self.framework, **meta)
 
+    def on_retriever_start(self, serialized, query, **kwargs):
+        self._track(kwargs)
+
+    def on_retriever_end(self, documents, **kwargs):
+        meta = self._meta(kwargs)
+        self._forget(kwargs)
+        for document in documents or []:
+            text = getattr(document, "page_content", None)
+            if text is None and isinstance(document, dict):
+                text = document.get("page_content", document.get("pageContent"))
+            output = str(text) if text is not None else textify(document)
+            document_metadata = document.get("metadata") if isinstance(document, dict) else getattr(document, "metadata", None)
+            if document_metadata is not None:
+                output += "\nMetadata:\n" + json.dumps(document_metadata, default=str)
+            self.sdk.scan_tool_result("retriever", output,
+                enforce=self._enforce, before_delivery=self._enforce, framework=self.framework, **meta)
+
+    def on_retriever_error(self, error, **kwargs):
+        self._forget(kwargs)
+
     def on_tool_error(self, error, **kwargs):
         self._forget(kwargs)
 
@@ -125,6 +147,8 @@ class GgateCallbackHandler(BaseCallbackHandler):
         )
         record = self._runs.setdefault(run_id, {})
         record["session_id"] = str(session_id) if session_id else None
+        for field in ("agent_id", "agent_type"):
+            record[field] = run_metadata.get(field) or known.get(field) or self.metadata.get(field)
         self._runs.move_to_end(run_id)
         while len(self._runs) > _MAX_TRACKED_RUNS:
             self._runs.popitem(last=False)
@@ -144,6 +168,8 @@ class GgateCallbackHandler(BaseCallbackHandler):
                 else metadata.get("source_detail"),
             }
         )
+        run = self._runs.get(str(kwargs.get("run_id") or ""), {})
+        metadata.update({key: run[key] for key in ("agent_id", "agent_type") if run.get(key)})
         return {k: v for k, v in metadata.items() if v}
 
 

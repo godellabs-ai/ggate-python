@@ -1,24 +1,20 @@
 """Configuration and identity resolution.
 
-The SDK scans against a **Console** and nothing else: ``GGATE_CONSOLE_URL`` +
-``GGATE_API_KEY`` are the only required settings. Everything else has a default, resolved in
-this order: explicit ``init(...)`` arguments, ``GGATE_*`` environment variables, the device
-config an installed agent maintains at ``~/.ggate/config.yaml``, then built-in fallbacks.
-
-That device config is read for **identity only** (org, seat user, workstation id) and only when
-the file happens to exist — the SDK never talks to an agent. Sharing those values keeps SDK
-events attributed to the same org/seat/device as the coding-agent and browser events from the
-same machine, so the Console correlates them instead of inventing a second identity.
+Console URL, credentials and identity can come from the local collector config. Explicit
+credential providers, named environment variables and mounted secret files support rotation.
+The SDK connects directly to the Console; it does not call a local Detection Engine.
 """
 
 from __future__ import annotations
 
 import os
+import json
+import re
 import socket
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, NoReturn, Optional
+from typing import Callable, Dict, NoReturn, Optional
 
 #: Scan budget in seconds when nothing is configured. A ceiling, not a per-call cost: a text
 #: scan answers in tens of milliseconds. Raise it (``GGATE_TIMEOUT_MS``) for prompts carrying
@@ -55,14 +51,23 @@ def _read_config_scalar(name: str) -> Optional[str]:
     """
     try:
         for raw_line in _config_path().read_text(encoding="utf-8").splitlines():
-            line = raw_line.split("#", 1)[0].strip()
-            if not line or ":" not in line:
+            if raw_line[:1].isspace() or ":" not in raw_line:
                 continue
-            key, value = line.split(":", 1)
-            if key.strip() != name:
+            key, value = raw_line.split(":", 1)
+            if key != name:
                 continue
-            return value.strip().strip("'\"") or None
-    except OSError:
+            value = value.strip()
+            if value.startswith('"'):
+                parsed, end = json.JSONDecoder().raw_decode(value)
+                if not isinstance(parsed, str) or (value[end:].strip() and not value[end:].lstrip().startswith("#")):
+                    return None
+                return parsed.strip() or None
+            if value.startswith("'"):
+                match = re.fullmatch(r"'((?:[^']|'')*)'\s*(?:#.*)?", value)
+                return match[1].replace("''", "'").strip() or None if match else None
+            value = re.split(r"\s+#", value, maxsplit=1)[0].strip()
+            return None if value in {"", "null", "Null", "NULL", "~"} else value
+    except (OSError, ValueError):
         return None
     return None
 
@@ -137,8 +142,13 @@ class Config:
     timeout: float = field(default_factory=_default_timeout)
     # Where scans go. Both are required; without them every scan fails open with a message
     # saying so (see `Client`), because a missing setting must never break the host app.
-    console_url: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_CONSOLE_URL"))
-    api_key: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_API_KEY"))
+    console_url: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_CONSOLE_URL") or _read_config_scalar("api_url"))
+    cloud_instance_metadata: bool = field(default_factory=lambda: _bool_env("GGATE_CLOUD_INSTANCE_METADATA", _read_config_scalar("cloud_instance_metadata_enabled") == "true"))
+    workload_identity: Dict[str, str] = field(default_factory=dict)
+    api_key: Optional[str] = None
+    api_key_env: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_API_KEY_ENV") or _read_config_scalar("api_key_env"))
+    api_key_file: Optional[str] = field(default_factory=lambda: os.getenv("GGATE_API_KEY_FILE"))
+    api_key_provider: Optional[Callable[[], Optional[str]]] = None
     # PEM CA certificate used to verify a Console signed by a private CA. Standard public CA trust
     # remains the default; TLS verification is never disabled by this SDK.
     console_ca_cert: Optional[str] = field(
@@ -191,10 +201,22 @@ class Config:
             _non_blank(self.team) or _required("team", "GGATE_TEAM", "Platform Engineering"),
         )
 
+    def resolve_api_key(self) -> Optional[str]:
+        if self.api_key_provider is not None:
+            return self.api_key_provider()
+        if self.api_key_env:
+            return _non_blank(os.getenv(self.api_key_env))
+        if self.api_key_file:
+            try:
+                return _non_blank(Path(self.api_key_file).read_text().strip())
+            except OSError:
+                return None
+        return self.api_key or _read_config_scalar("api_key") or os.getenv("GGATE_API_KEY")
+
     @property
     def configured(self) -> bool:
         """Whether a Console to scan against has been supplied."""
-        return bool(self.console_url and self.api_key)
+        return bool(self.console_url and self.resolve_api_key())
 
     @classmethod
     def from_values(cls, **kwargs) -> "Config":

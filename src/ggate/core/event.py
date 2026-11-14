@@ -406,6 +406,8 @@ class RuntimeEventBuilder:
             ),
             "session": _clean_dict(
                 {
+                    "agent_id": merged.get("agent_id"),
+                    "agent_type": merged.get("agent_type"),
                     "session_id": merged.get("session_id") or _DEFAULT_SESSION_ID,
                     # Only a correlation the caller actually established. A fresh per-event UUID
                     # would correlate one event with itself and fill the Console's correlation

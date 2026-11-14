@@ -11,6 +11,15 @@ class GgateTransportError(GgateError):
     """Raised internally when the Console cannot be reached or rejects the request."""
 
 
+class GgateConsoleUnreachableError(GgateTransportError):
+    """Raised internally when the Console itself could not be reached.
+
+    No connection (DNS, refused, reset, TLS, connect timeout), or a gateway in front of the Console
+    answering 502/503/504 for it. A Console that answered with an error, or a scan still running when
+    the SDK's budget ran out, is not unreachable. Only this case applies the Console's outage setting.
+    """
+
+
 class GgateBlockedError(GgateError):
     """Raised by enforcing adapters on a block verdict."""
 

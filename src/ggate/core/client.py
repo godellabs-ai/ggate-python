@@ -12,9 +12,22 @@ returns immediately.
 Kill Switch: a lock the Console reported is the one exception. It raises
 ``GgateAgentContainedError`` in both modes, turns ``async`` scanning synchronous so a release is seen
 at once, and stays in force (fails closed) while the Console cannot confirm that release.
+
+Console outages: General Settings sets a default for when the Console is down plus exceptions
+(users, teams, tags, agents) that get the opposite. Every answered scan carries what applies to its
+user and this agent (``console_outage_action``) and to this agent's other users
+(``console_outage_fallback``). When that is ``block`` and a later waited-for scan cannot reach the
+Console at all, the scan returns a block instead of failing open. A Console that answered with an
+error, or a scan still running when the budget ran out, keeps failing open. Until the Console has
+answered once, this process does not know the setting and fails open.
 """
 
 from __future__ import annotations
+
+import asyncio
+import json
+
+from .workload_identity import WorkloadIdentity
 
 import logging
 import re
@@ -24,7 +37,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from ..exceptions import GgateAgentContainedError, GgateBlockedError, GgateTransportError
+from ..exceptions import (
+    GgateAgentContainedError,
+    GgateBlockedError,
+    GgateConsoleUnreachableError,
+    GgateTransportError,
+)
 from .config import Config
 from .console_transport import ConsoleTransport
 from .decision import Decision
@@ -36,6 +54,9 @@ logger = logging.getLogger("ggate")
 _client: Optional["Client"] = None
 _latest_client: Optional["Client"] = None
 
+# Bound on users whose outage answer is remembered; the oldest are forgotten first.
+_MAX_OUTAGE_SUBJECTS = 10_000
+
 _UNCONFIGURED = (
     "GGATE_CONSOLE_URL and GGATE_API_KEY are not set, so there is nowhere to scan: "
     "every scan will fail open. Set both (Console UI -> Admin -> API keys), or pass "
@@ -44,19 +65,23 @@ _UNCONFIGURED = (
 
 
 class _Breaker:
-    """Fail open instantly for `cooldown` seconds after a sync-scan failure."""
+    """Skip the Console for `cooldown` seconds after a sync-scan failure, answering as that failure did."""
 
     def __init__(self, cooldown: float):
         self._cooldown = cooldown
         self._until = 0.0
+        # Whether the failure that tripped the breaker was the Console being unreachable.
+        self.outage = False
 
     def is_open(self) -> bool:
         return time.monotonic() < self._until
 
-    def trip(self) -> None:
+    def trip(self, outage: bool = False) -> None:
+        self.outage = outage
         self._until = time.monotonic() + self._cooldown
 
     def reset(self) -> None:
+        self.outage = False
         self._until = 0.0
 
 
@@ -81,7 +106,7 @@ class Client:
         _latest_client = self
         self.config = config or Config.from_values()
         if transport is None:
-            if self.config.configured:
+            if self.config.console_url:
                 transport = ConsoleTransport(self.config)
             else:
                 if self.config.enabled:
@@ -89,12 +114,17 @@ class Client:
                 transport = _UnconfiguredTransport()
         self.transport = transport
         self.builder = RuntimeEventBuilder(self.config)
+        self._workload_identity = WorkloadIdentity(self.config.cloud_instance_metadata, self.config.workload_identity)
         self._containments: dict[tuple[Optional[str], str], Decision] = {}
         self._containment_guard = threading.Lock()
         self.queue = DeliveryQueue(
             self.transport, self.config.queue_max, self.config.flush_timeout, on_result=self._on_queued_result
         )
         self._breaker = _Breaker(self.config.cooldown)
+        # What the Console said to do while it is down: per user, and for users not yet scanned.
+        self._outage_actions: dict = {}
+        self._outage_fallback = "allow"
+        self._outage_guard = threading.Lock()
         if self.config.enabled:
             self._report_collector_ready()
 
@@ -178,6 +208,26 @@ class Client:
     async def scan_tool_call_async(self, tool: str, *, input_summary=None, enforce: bool = False, **metadata) -> Decision:
         event, redaction = self.builder.tool_call(tool, input_summary=input_summary, **metadata)
         decision = await self._send_or_queue_async(event, redaction.to_json(), wait=self.config.mode == "sync" or enforce)
+        return self._finish(decision, enforce)
+
+    def scan_memory_write(self, content, *, store: str = "memory", operation: str = "put", enforce: bool = True, **metadata) -> Decision:
+        """Scan plaintext and metadata before persistence; always wait, including in async mode.
+
+        Uses the existing pre-action tool wire contract and the SDK's transport-failure policy.
+        With enforcement disabled the caller must inspect the returned decision before writing.
+        """
+        event, redaction = self.builder.tool_call("memory.write", input_summary={
+            "store": store, "operation": operation, "content": json.loads(json.dumps(content, allow_nan=False)),
+        }, **{"framework": "memory", **metadata})
+        decision = self._send_or_queue(event, redaction.to_json(), wait=True)
+        return self._finish(decision, enforce)
+
+    async def scan_memory_write_async(self, content, *, store: str = "memory", operation: str = "put", enforce: bool = True, **metadata) -> Decision:
+        """Async counterpart of scan_memory_write; waits for the persistence verdict."""
+        event, redaction = self.builder.tool_call("memory.write", input_summary={
+            "store": store, "operation": operation, "content": json.loads(json.dumps(content, allow_nan=False)),
+        }, **{"framework": "memory", **metadata})
+        decision = await self._send_or_queue_async(event, redaction.to_json(), wait=True)
         return self._finish(decision, enforce)
 
     def scan_tool_result(self, tool: str, output: str, *, wait: bool = False, enforce: bool = False, **metadata) -> Decision:
@@ -319,13 +369,40 @@ class Client:
         # A queued event's verdict is how an `async` deployment first learns of a lock. From then on
         # every scan waits for the Console, so a release takes effect at the very next scan.
         if request.get("op") == "scan_text":
-            self._observe(Decision.from_response(response), self._subject(request["event"]))
+            subject = self._subject(request["event"])
+            self._learn(response, subject)
+            self._observe(Decision.from_response(response), subject)
 
-    def _unavailable(self, message: str, subject) -> Decision:
-        """The Console gave no answer: fail open, unless a known lock has not been released."""
+    def _learn(self, response, subject) -> None:
+        """Remember the Console's outage answer from an answered scan. Older Consoles omit it."""
+        if not isinstance(response, Mapping):
+            return
+        action = response.get("console_outage_action")
+        fallback = response.get("console_outage_fallback")
+        with self._outage_guard:
+            if fallback in ("allow", "block"):
+                self._outage_fallback = fallback
+            if action in ("allow", "block"):
+                user = subject[0]
+                self._outage_actions.pop(user, None)
+                self._outage_actions[user] = action
+                while len(self._outage_actions) > _MAX_OUTAGE_SUBJECTS:
+                    self._outage_actions.pop(next(iter(self._outage_actions)))
+
+    def console_outage_action(self, user: Optional[str] = None) -> str:
+        """What a scan for ``user`` gets while the Console is unreachable: ``"allow"`` or ``"block"``."""
+        key = user.strip().lower() if user else None
+        with self._outage_guard:
+            return self._outage_actions.get(key, self._outage_fallback)
+
+    def _unavailable(self, message: str, subject, *, outage: bool = False) -> Decision:
+        """The Console gave no answer: fail open, unless a known lock has not been released or the
+        Console is down and its settings block events until it is back."""
         held = self._held(subject)
         if held is not None:
             return Decision.kill_switch_held(held, "the Console has not confirmed a release")
+        if outage and self.console_outage_action(subject[0]) == "block":
+            return Decision.console_outage_block()
         return Decision.fail_open_decision(message)
 
     @staticmethod
@@ -342,38 +419,54 @@ class Client:
     def _send_or_queue(self, event, redaction, *, wait: bool) -> Decision:
         if not self.config.enabled:
             return Decision.pass_()
+        identity = self._workload_identity.get()
+        if identity:
+            event["workload_identity"] = identity
         request = {"op": "scan_text", "event": event, "redaction": redaction}
         subject = self._subject(event)
         if not wait and self._held(subject) is None:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return self._unavailable("console unavailable (cooling down after failure)", subject)
+            return self._unavailable(
+                "console unavailable (cooling down after failure)", subject, outage=self._breaker.outage
+            )
         try:
-            decision = self._observe(Decision.from_response(self.transport.request(request)), subject)
-        except Exception as exc:  # noqa: BLE001 - any scan failure fails open
-            self._breaker.trip()
-            logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
-            return self._unavailable(str(exc), subject)
+            response = self.transport.request(request)
+            self._learn(response, subject)
+            decision = self._observe(Decision.from_response(response), subject)
+        except Exception as exc:  # noqa: BLE001 - any scan failure fails open unless the Console says otherwise
+            outage = isinstance(exc, GgateConsoleUnreachableError)
+            self._breaker.trip(outage)
+            logger.warning("ggate console scan failed (cooling down for %.0fs): %s", self.config.cooldown, exc)
+            return self._unavailable(str(exc), subject, outage=outage)
         self._breaker.reset()
         return decision
 
     async def _send_or_queue_async(self, event, redaction, *, wait: bool) -> Decision:
         if not self.config.enabled:
             return Decision.pass_()
+        identity = await asyncio.to_thread(self._workload_identity.get)
+        if identity:
+            event["workload_identity"] = identity
         request = {"op": "scan_text", "event": event, "redaction": redaction}
         subject = self._subject(event)
         if not wait and self._held(subject) is None:
             self.queue.submit(request)
             return Decision.pass_()
         if self._breaker.is_open():
-            return self._unavailable("console unavailable (cooling down after failure)", subject)
+            return self._unavailable(
+                "console unavailable (cooling down after failure)", subject, outage=self._breaker.outage
+            )
         try:
-            decision = self._observe(Decision.from_response(await self.transport.request_async(request)), subject)
-        except Exception as exc:  # noqa: BLE001 - any scan failure fails open
-            self._breaker.trip()
-            logger.warning("ggate console scan failed (failing open for %.0fs): %s", self.config.cooldown, exc)
-            return self._unavailable(str(exc), subject)
+            response = await self.transport.request_async(request)
+            self._learn(response, subject)
+            decision = self._observe(Decision.from_response(response), subject)
+        except Exception as exc:  # noqa: BLE001 - any scan failure fails open unless the Console says otherwise
+            outage = isinstance(exc, GgateConsoleUnreachableError)
+            self._breaker.trip(outage)
+            logger.warning("ggate console scan failed (cooling down for %.0fs): %s", self.config.cooldown, exc)
+            return self._unavailable(str(exc), subject, outage=outage)
         self._breaker.reset()
         return decision
 

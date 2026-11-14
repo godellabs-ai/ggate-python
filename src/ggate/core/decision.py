@@ -10,6 +10,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+#: Shown when the Console is unreachable and its General Settings block events until it is back.
+#: Matches the Gate collectors (``ggate_core::console_outage::MESSAGE``).
+CONSOLE_OUTAGE_MESSAGE = (
+    "The Gödel Gate Console is unreachable and your organization blocks AI activity until it is "
+    "reachable again. Retry once the Console is back."
+)
+
 
 @dataclass(frozen=True)
 class TopicClassification:
@@ -169,6 +176,15 @@ class Decision:
             message=message,
             reason_codes=["engine_unreachable"],
             fail_open=True,
+        )
+
+    @classmethod
+    def console_outage_block(cls) -> "Decision":
+        """The Console is unreachable and its General Settings block events until it is back."""
+        return cls(
+            verdict="block",
+            message=CONSOLE_OUTAGE_MESSAGE,
+            reason_codes=["console_unreachable"],
         )
 
     @classmethod

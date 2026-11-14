@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict
 
-from ..exceptions import GgateTransportError
+from ..exceptions import GgateConsoleUnreachableError, GgateTransportError
 from .config import Config
 
 # Re-exchange this long before the access token expires.
@@ -43,9 +43,32 @@ def _auth_failure(step: str, status: int) -> str:
     return f"console {step} failed: HTTP {status}"
 
 
+def _gateway_error(status: int, detail: str) -> bool:
+    """A 502/503/504 whose body is not the Console's own JSON: a gateway answering for a Console that
+    is down. The Console's own 503 (for example an incomplete scan) carries a JSON body."""
+    return status in (502, 503, 504) and not detail.lstrip().startswith("{")
+
+
+def _http_failure(message: str, status: int, detail: str) -> GgateTransportError:
+    if _gateway_error(status, detail):
+        return GgateConsoleUnreachableError(message)
+    return GgateTransportError(message)
+
+
+def _connection_failure(base_url: str, exc: Exception) -> GgateTransportError:
+    """Classify a non-HTTP failure. A read timeout means the Console accepted the request and may still
+    be working on it; a malformed body means it answered. Everything else is no connection at all."""
+    if isinstance(exc, TimeoutError):
+        return GgateTransportError(f"console scan timed out ({base_url}): {exc}")
+    if isinstance(exc, ValueError):
+        return GgateTransportError(f"console returned an invalid response ({base_url}): {exc}")
+    return GgateConsoleUnreachableError(f"console unreachable ({base_url}): {exc}")
+
+
 class ConsoleTransport:
     def __init__(self, config: Config):
         self.config = config
+        self._credential = None
         self._base_url = (config.console_url or "").rstrip("/")
         self._lock = threading.Lock()
         self._access_token: str | None = None
@@ -102,13 +125,20 @@ class ConsoleTransport:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read(300).decode("utf-8", errors="replace") if exc.fp else ""
-            raise GgateTransportError(f"console scan failed: HTTP {exc.code} {detail}") from exc
+            raise _http_failure(f"console scan failed: HTTP {exc.code} {detail}", exc.code, detail) from exc
         except (OSError, ValueError) as exc:
-            raise GgateTransportError(f"console unreachable ({self._base_url}): {exc}") from exc
+            raise _connection_failure(self._base_url, exc) from exc
 
     def _token(self) -> str:
         """Current access token, refreshing the token pair when missing or near expiry."""
         with self._lock:
+            key = self.config.resolve_api_key()
+            if key != self._credential:
+                self._credential = key
+                self._access_token = None
+                self._refresh_token = None
+            if not key:
+                raise GgateTransportError("Console API key source is empty or unavailable")
             if self._access_token and time.monotonic() < self._token_expires_at - _TOKEN_SLACK_SECS:
                 return self._access_token
             if self._refresh_token:
@@ -118,15 +148,16 @@ class ConsoleTransport:
             http_request = urllib.request.Request(
                 f"{self._base_url}/api/v1/detection-engine/token",
                 method="POST",
-                headers={"x-api-key": self.config.api_key or ""},
+                headers={"x-api-key": key or ""},
             )
             try:
                 with self._urlopen(http_request) as response:
                     data = json.loads(response.read())
             except urllib.error.HTTPError as exc:
-                raise GgateTransportError(_auth_failure("token exchange", exc.code)) from exc
+                detail = exc.read(300).decode("utf-8", errors="replace") if exc.fp else ""
+                raise _http_failure(_auth_failure("token exchange", exc.code), exc.code, detail) from exc
             except (OSError, ValueError) as exc:
-                raise GgateTransportError(f"console unreachable ({self._base_url}): {exc}") from exc
+                raise _connection_failure(self._base_url, exc) from exc
             return self._accept_token_pair(data, "exchange")
 
     def _refresh_access_token(self) -> str | None:
@@ -147,11 +178,11 @@ class ConsoleTransport:
                 self._refresh_token = None
                 return None
             detail = exc.read(300).decode("utf-8", errors="replace") if exc.fp else ""
-            raise GgateTransportError(
-                f"console token refresh failed: HTTP {exc.code} {detail}"
+            raise _http_failure(
+                f"console token refresh failed: HTTP {exc.code} {detail}", exc.code, detail
             ) from exc
         except (OSError, ValueError) as exc:
-            raise GgateTransportError(f"console unreachable ({self._base_url}): {exc}") from exc
+            raise _connection_failure(self._base_url, exc) from exc
         return self._accept_token_pair(data, "refresh")
 
     def _accept_token_pair(self, data: Dict[str, Any], operation: str) -> str:
