@@ -43,6 +43,35 @@ def _auth_failure(step: str, status: int) -> str:
     return f"console {step} failed: HTTP {status}"
 
 
+def _partial_scan(body: str, event_id: str | None) -> Dict[str, Any] | None:
+    """Use only the Console's policy-resolved decision for this exact event."""
+    try:
+        result = json.loads(body)
+    except ValueError:
+        return None
+    if (
+        not event_id or not isinstance(result, dict)
+        or result.get("event_id") != event_id or result.get("policy_resolved") is not True
+    ):
+        return None
+    decision = result.get("decision")
+    if (
+        not isinstance(decision, dict)
+        or decision.get("kind") not in (None, "verdict")
+        or decision.get("verdict") not in ("pass", "warn", "block", "system")
+        or not isinstance(decision.get("message"), str)
+        or not isinstance(decision.get("fail_open"), bool)
+    ):
+        return None
+    return {
+        **decision,
+        "fail_open": decision["fail_open"] or decision["verdict"] != "block",
+        "model_status": result.get("model_status") or {"state": "unknown"},
+        "pipeline_status": result.get("pipeline_status"),
+        "document_intelligence": result.get("document_intelligence"),
+    }
+
+
 def _gateway_error(status: int, detail: str) -> bool:
     """A 502/503/504 whose body is not the Console's own JSON: a gateway answering for a Console that
     is down. The Console's own 503 (for example an incomplete scan) carries a JSON body."""
@@ -92,25 +121,26 @@ class ConsoleTransport:
             separators=(",", ":"),
             default=str,
         ).encode("utf-8")
+        event_id = (request.get("event") or {}).get("id")
         token = self._token()
         try:
-            return self._scan(body, token)
+            return self._scan(body, token, event_id)
         except GgateTransportError as exc:
             message = str(exc)
             if any(f"HTTP {status}" in message for status in (502, 503, 504)):
                 # Re-scanning the same event id is safe; tolerate one transient proxy restart.
-                return self._scan(body, token)
+                return self._scan(body, token, event_id)
             if "HTTP 401" not in message:
                 raise
             # Token expired server-side (or was revoked): refresh the pair and retry once.
             with self._lock:
                 self._access_token = None
-            return self._scan(body, self._token())
+            return self._scan(body, self._token(), event_id)
 
     async def request_async(self, request: Dict[str, Any]) -> Dict[str, Any]:
         return await asyncio.to_thread(self.request, request)
 
-    def _scan(self, body: bytes, token: str) -> Dict[str, Any]:
+    def _scan(self, body: bytes, token: str, event_id: str | None) -> Dict[str, Any]:
         http_request = urllib.request.Request(
             f"{self._base_url}/api/v1/scan",
             data=body,
@@ -124,8 +154,13 @@ class ConsoleTransport:
             with self._urlopen(http_request) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
-            detail = exc.read(300).decode("utf-8", errors="replace") if exc.fp else ""
-            raise _http_failure(f"console scan failed: HTTP {exc.code} {detail}", exc.code, detail) from exc
+            with exc:
+                detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            if exc.code in (503, 504):
+                resolved = _partial_scan(detail, event_id)
+                if resolved is not None:
+                    return resolved
+            raise _http_failure(f"console scan failed: HTTP {exc.code}", exc.code, detail) from exc
         except (OSError, ValueError) as exc:
             raise _connection_failure(self._base_url, exc) from exc
 

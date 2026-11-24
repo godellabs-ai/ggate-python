@@ -14,9 +14,9 @@ The Node.js SDK is [godellabs-ai/ggate-node](https://github.com/godellabs-ai/gga
 
 ## Release compatibility
 
-This SDK release is **0.3.1**, released with Gödel Gate Console **0.3.1**.
+This SDK release is **0.4.0**, released with Gödel Gate Console **0.4.0**.
 Install a release tag rather than the moving default branch. Keep the SDK release selected by your Console when maintaining an older deployment.
-SDK patch releases may advance independently within **0.3.x**. Keep an older SDK release for an older Console and validate minor upgrades together.
+SDK patch releases may advance independently within **0.4.x**. Keep an older SDK release for an older Console and validate minor upgrades together.
 
 ### Microsoft 365 Agents SDK
 
@@ -38,6 +38,14 @@ See the runnable [Microsoft 365 example](examples/microsoft-365-agent/README.md)
 and tool operations need their own adapter or explicit scans; Microsoft-managed internals and
 remote attachment bytes are not automatically visible. Python conversation context propagates
 to nested explicit scans and is isolated between concurrent turns.
+
+### Changes in 0.4.0
+
+- On HTTP 503 or 504, the SDK honors a Console policy decision tied to the submitted event.
+  Inspect `model_status` for coverage. An allowed partial scan sets `fail_open`.
+- Blocked decisions expose `detection_url` when the Console supplies an event link.
+- Document intelligence includes classification coverage and topic aggregation when available.
+- A response without a verdict is marked fail-open. A previously confirmed Kill Switch lock stays in force until the Console confirms release.
 
 ### Changes in 0.3.1
 
@@ -79,7 +87,7 @@ to nested explicit scans and is isolated between concurrent turns.
 ## Install
 
 ```bash
-python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git@v0.3.1"
+python -m pip install "ggate @ git+https://github.com/godellabs-ai/ggate-python.git@v0.4.0"
 ```
 
 The core package has no dependencies. Framework adapters import the framework you already use;

@@ -18,6 +18,10 @@ CONSOLE_OUTAGE_MESSAGE = (
 )
 
 
+def _outage_action(value: Any) -> Optional[str]:
+    return value if value in ("allow", "block") else None
+
+
 @dataclass(frozen=True)
 class TopicClassification:
     label: str
@@ -25,6 +29,7 @@ class TopicClassification:
     runner_up: Optional[str] = None
     runner_up_confidence: Optional[float] = None
     resolution: Optional[Dict[str, Any]] = None
+    aggregation: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,7 @@ class DocumentIntelligence:
     sensitivity: SensitivityClassification
     matched_text: Optional[str] = None
     file_classification: Optional[Dict[str, Any]] = None
+    coverage: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_json(cls, value: Dict[str, Any]) -> "DocumentIntelligence":
@@ -71,6 +77,7 @@ class DocumentIntelligence:
                         else None
                     ),
                     resolution=topic.get("resolution"),
+                    aggregation=topic.get("aggregation"),
                 ),
                 overall_confidence=float(taxonomy.get("overall_confidence") or 0.0),
                 content_types=list(taxonomy.get("content_types") or []),
@@ -88,6 +95,7 @@ class DocumentIntelligence:
             ),
             matched_text=value.get("matched_text"),
             file_classification=value.get("file_classification"),
+            coverage=value.get("coverage"),
         )
 
     def to_json(self) -> Dict[str, Any]:
@@ -101,6 +109,8 @@ class DocumentIntelligence:
             topic["runner_up_confidence"] = self.taxonomy.topic.runner_up_confidence
         if self.taxonomy.topic.resolution is not None:
             topic["resolution"] = self.taxonomy.topic.resolution
+        if self.taxonomy.topic.aggregation is not None:
+            topic["aggregation"] = self.taxonomy.topic.aggregation
         value: Dict[str, Any] = {
             "taxonomy": {
                 "topic": topic,
@@ -121,6 +131,8 @@ class DocumentIntelligence:
             value["matched_text"] = self.matched_text
         if self.file_classification is not None:
             value["file_classification"] = self.file_classification
+        if self.coverage is not None:
+            value["coverage"] = self.coverage
         return value
 
 
@@ -138,6 +150,10 @@ class Decision:
     pipeline_status: Optional[Dict[str, Any]] = None
     media_gate: Optional[Dict[str, Any]] = None
     matched_policies: List[Dict[str, Any]] = field(default_factory=list)
+    detection_url: Optional[str] = None
+    console_outage_action: Optional[str] = None
+    console_outage_fallback: Optional[str] = None
+    model_status: Optional[Dict[str, Any]] = None
 
     @property
     def blocked(self) -> bool:
@@ -198,6 +214,7 @@ class Decision:
             policy_source=last.policy_source,
             matched_policies=last.matched_policies,
             detection=last.detection,
+            detection_url=last.detection_url,
         )
 
     @classmethod
@@ -210,11 +227,11 @@ class Decision:
             return cls.fail_open_decision(value.get("message") or "console returned an error")
         if kind not in (None, "verdict"):
             return cls.fail_open_decision(f"unexpected scan response kind {kind!r}")
-        raw_verdict = str(value.get("verdict", "pass"))
+        raw_verdict = value.get("verdict")
         # Older Consoles emitted `hard_block`; preserve enforcement while exposing the current
         # unified `block` contract to callers.
         verdict = "block" if raw_verdict == "hard_block" else raw_verdict
-        if verdict not in {"system", "pass", "warn", "block"}:
+        if verdict not in ("system", "pass", "warn", "block"):
             return cls.fail_open_decision(f"unexpected scan verdict {raw_verdict!r}")
         intelligence = value.get("document_intelligence")
         return cls(
@@ -225,6 +242,9 @@ class Decision:
             policy_source=value.get("policy_source"),
             matched_policies=list(value.get("matched_policies") or []),
             detection=value.get("detection"),
+            detection_url=value.get("detection_url"),
+            console_outage_action=_outage_action(value.get("console_outage_action")),
+            console_outage_fallback=_outage_action(value.get("console_outage_fallback")),
             document_intelligence=(
                 DocumentIntelligence.from_json(intelligence)
                 if isinstance(intelligence, dict)
@@ -232,6 +252,7 @@ class Decision:
             ),
             fail_open=bool(value.get("fail_open", False)),
             pipeline_status=value.get("pipeline_status"),
+            model_status=value.get("model_status"),
             media_gate=value.get("media_gate"),
         )
 
@@ -245,10 +266,18 @@ class Decision:
             "matched_policies": self.matched_policies,
             "fail_open": self.fail_open,
         }
+        if self.detection_url is not None:
+            data["detection_url"] = self.detection_url
+        if self.console_outage_action is not None:
+            data["console_outage_action"] = self.console_outage_action
+        if self.console_outage_fallback is not None:
+            data["console_outage_fallback"] = self.console_outage_fallback
         if self.detection is not None:
             data["detection"] = self.detection
         if self.document_intelligence is not None:
             data["document_intelligence"] = self.document_intelligence.to_json()
+        if self.model_status is not None:
+            data["model_status"] = self.model_status
         if self.pipeline_status is not None:
             data["pipeline_status"] = self.pipeline_status
         if self.media_gate is not None:
