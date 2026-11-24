@@ -114,6 +114,7 @@ class OutageActionTests(unittest.TestCase):
 class _FailingTransport(ConsoleTransport):
     def __init__(self, failure):
         super().__init__(Config.from_values(console_url="https://console.example", api_key="godel_test"))
+        self._credential = self.config.resolve_api_key()
         self._access_token = "token"
         self._token_expires_at = float("inf")
         self.failure = failure
@@ -129,6 +130,26 @@ def http_error(status, body):
 
 
 class TransportClassificationTests(unittest.TestCase):
+    def test_partial_decision_requires_matching_event_and_resolved_policy(self):
+        from ggate import Decision
+
+        event = {"op": "scan_text", "event": {"id": "this-event"}, "redaction": {}}
+        for status in (503, 504):
+            for verdict in ("block", "warn", "pass"):
+                reply = {"event_id": "this-event", "policy_resolved": True,
+                         "decision": {"verdict": verdict, "message": "policy", "fail_open": False},
+                         "model_status": {"state": "partial", "attempted": 2, "completed": 1}}
+                transport = _FailingTransport(http_error(status, json.dumps(reply)))
+                decision = Decision.from_response(transport.request(event))
+                self.assertEqual(decision.verdict, verdict)
+                self.assertEqual(decision.blocked, verdict == "block")
+                self.assertEqual(decision.fail_open, verdict != "block")
+                self.assertEqual(decision.to_json()["model_status"], reply["model_status"])
+                for change in ({"event_id": "other"}, {"policy_resolved": False}, {"decision": {"verdict": verdict}}):
+                    invalid = _FailingTransport(http_error(status, json.dumps({**reply, **change})))
+                    with self.assertRaises(GgateTransportError):
+                        invalid.request(event)
+
     def scan(self, failure):
         with self.assertRaises(GgateTransportError) as raised:
             _FailingTransport(failure).request({"op": "scan_text", "event": {}, "redaction": {}})

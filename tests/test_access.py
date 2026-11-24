@@ -16,11 +16,14 @@ POLICY = {"id": "access-123", "name": "Engineering only", "description": "Applic
 
 class Console:
     def __init__(self):
+        self.malformed = False
         self.events, self.locks, self.down, self.verdict = [], set(), False, "pass"
 
     def request(self, request):
         if request.get("op") != "scan_text":
             return {"kind": "ok"}
+        if self.malformed:
+            return {}
         if self.down:
             raise ConnectionError("console down")
         event = request["event"]
@@ -156,6 +159,10 @@ def test_kill_switch_isolated_by_user_and_framework(mode, async_calls):
         await scan(**{**alice, "user": "bob@example.com", "enforce": True})
         await scan(**{**alice, "framework": "langchain", "enforce": True})
         assert sdk.contained
+        console.malformed = True
+        with pytest.raises(ggate.GgateAgentContainedError):
+            await scan(**alice)
+        console.malformed = False
         console.down = True
         with pytest.raises(ggate.GgateAgentContainedError):
             await scan(**{**alice, "user": "ALICE@example.com"})

@@ -357,6 +357,8 @@ class Client:
             was_held = subject in self._containments
             if decision.contained:
                 self._containments[subject] = decision
+            elif was_held and (decision.fail_open or decision.model_status is not None):
+                return Decision.kill_switch_held(self._containments[subject], "the Console has not confirmed a release")
             elif not decision.fail_open:
                 self._containments.pop(subject, None)
         if decision.contained and not was_held:
@@ -370,19 +372,18 @@ class Client:
         # every scan waits for the Console, so a release takes effect at the very next scan.
         if request.get("op") == "scan_text":
             subject = self._subject(request["event"])
-            self._learn(response, subject)
-            self._observe(Decision.from_response(response), subject)
+            decision = Decision.from_response(response)
+            self._learn(decision, subject)
+            self._observe(decision, subject)
 
-    def _learn(self, response, subject) -> None:
+    def _learn(self, decision: Decision, subject) -> None:
         """Remember the Console's outage answer from an answered scan. Older Consoles omit it."""
-        if not isinstance(response, Mapping):
-            return
-        action = response.get("console_outage_action")
-        fallback = response.get("console_outage_fallback")
+        action = decision.console_outage_action
+        fallback = decision.console_outage_fallback
         with self._outage_guard:
-            if fallback in ("allow", "block"):
+            if fallback is not None:
                 self._outage_fallback = fallback
-            if action in ("allow", "block"):
+            if action is not None:
                 user = subject[0]
                 self._outage_actions.pop(user, None)
                 self._outage_actions[user] = action
@@ -433,8 +434,9 @@ class Client:
             )
         try:
             response = self.transport.request(request)
-            self._learn(response, subject)
-            decision = self._observe(Decision.from_response(response), subject)
+            decision = Decision.from_response(response)
+            self._learn(decision, subject)
+            decision = self._observe(decision, subject)
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open unless the Console says otherwise
             outage = isinstance(exc, GgateConsoleUnreachableError)
             self._breaker.trip(outage)
@@ -460,8 +462,9 @@ class Client:
             )
         try:
             response = await self.transport.request_async(request)
-            self._learn(response, subject)
-            decision = self._observe(Decision.from_response(response), subject)
+            decision = Decision.from_response(response)
+            self._learn(decision, subject)
+            decision = self._observe(decision, subject)
         except Exception as exc:  # noqa: BLE001 - any scan failure fails open unless the Console says otherwise
             outage = isinstance(exc, GgateConsoleUnreachableError)
             self._breaker.trip(outage)
